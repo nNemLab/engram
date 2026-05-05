@@ -1,0 +1,12 @@
+[Unit]
+Description=Trigger Engram daily digest at 23:00 local
+Requires=engram-daily-digest.service
+
+[Timer]
+OnCalendar=*-*-* 23:00:00
+Persistent=true
+RandomizedDelaySec=5min
+Unit=engram-daily-digest.service
+
+[Install]
+WantedBy=timers.target

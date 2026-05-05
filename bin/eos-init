@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# First-time setup. Creates ~/.engram, copies config + .env, initializes the DB,
+# scaffolds the vault from the template.
+set -euo pipefail
+
+src="$(cd "$(dirname "$0")/.." && pwd)"
+root="${ENGRAM_ROOT:-$HOME/.engram}"
+
+echo "==> Engram init at $root"
+mkdir -p "$root" "$root/playbooks/scratch" "$root/playbooks/curated" "$root/playbooks/runs"
+
+# Config
+if [[ ! -f "$root/config.yml" ]]; then
+    cp "$src/config.example.yml" "$root/config.yml"
+    echo "  + $root/config.yml (copied from config.example.yml)"
+else
+    echo "  = $root/config.yml (kept existing)"
+fi
+
+# Env
+if [[ ! -f "$root/.env" ]]; then
+    cp "$src/.env.example" "$root/.env"
+    echo "  + $root/.env (copied; fill in keys)"
+else
+    echo "  = $root/.env (kept existing)"
+fi
+
+# Vault scaffold
+if [[ ! -d "$root/vault" ]]; then
+    cp -r "$src/vault-template" "$root/vault"
+    # Drop .gitkeep stubs.
+    find "$root/vault" -name '.gitkeep' -delete
+    echo "  + $root/vault (scaffolded from vault-template)"
+else
+    echo "  = $root/vault (kept existing)"
+fi
+
+# Initialize DB. The python entry points apply schema on first connect.
+export ENGRAM_CONFIG="$root/config.yml"
+echo "==> Initializing database (applies schema, creates vec0 table)"
+python -c "from engram.common.db import get_connection; c = get_connection(); c.close(); print('  ok')"
+
+cat <<EOF
+
+==> Done.
+
+Next steps:
+  1. Edit $root/config.yml if you want different paths.
+  2. Edit $root/.env for API keys (Tavily, etc.).
+  3. Open $root/vault in Obsidian; install Dataview + Templater plugins.
+  4. Wire the MCP server into Claude Code:
+       claude mcp add -s user engram \$HOME/.engram/.venv/bin/engram-mcp
+       claude mcp list   # verify ✓ Connected
+  5. In separate shells (or systemd units):
+       engram-projector
+       engram-watcher
+       engram-reactor
+EOF

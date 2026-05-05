@@ -1,0 +1,48 @@
+[project]
+name = "engram"
+version = "0.1.0"
+description = "Engram — Claude Code as kernel; event log canonical, Obsidian vault projected."
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0.0",
+    "sqlite-vec>=0.1.6",
+    "sentence-transformers>=3.0.0",
+    "watchdog>=4.0.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+    "httpx>=0.27",
+    "papermill>=2.5",
+    "ipykernel>=6.29",
+    "marimo>=0.9",
+    "click>=8.1",
+    "rich>=13.0",
+    "trafilatura>=2.0",
+    "arxiv>=2.1",
+    "anthropic>=0.40",
+    "pymupdf>=1.24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+engram-mcp        = "engram.mcp_server.__main__:main"
+engram-projector  = "engram.projector.__main__:main"
+engram-watcher    = "engram.watcher.__main__:main"
+engram-reactor    = "engram.reactor.__main__:main"
+engram-rag        = "engram.rag.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/engram"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"

@@ -1,0 +1,16 @@
+[Unit]
+Description=Engram vault projector (log -> Obsidian markdown)
+After=network.target
+
+[Service]
+Type=simple
+Environment=ENGRAM_CONFIG=%h/.engram/config.yml
+EnvironmentFile=-%h/.engram/.env
+ExecStart=%h/.engram/.venv/bin/engram-projector
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

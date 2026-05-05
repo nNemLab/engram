@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Run the daily-digest playbook and write outputs into a date-stamped run dir.
+# Invoked by the systemd timer engram-daily-digest.timer.
+set -euo pipefail
+
+WINDOW_HOURS="${1:-24}"
+DATE="$(date -u +%Y-%m-%d)"
+RUN_DIR="$HOME/.engram/playbooks/runs/auto-digest-$DATE"
+mkdir -p "$RUN_DIR"
+
+# Source ~/.engram/.env if present, so the playbook sees ENGRAM_ANTHROPIC_API_KEY etc.
+ENV_FILE="$HOME/.engram/.env"
+if [[ -f "$ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +a
+fi
+
+exec "$HOME/.engram/.venv/bin/papermill" \
+    "$HOME/.engram/playbooks/scratch/daily-digest.ipynb" \
+    "$RUN_DIR/notebook.ipynb" \
+    --cwd "$RUN_DIR" \
+    -p window_hours "$WINDOW_HOURS"

@@ -1,0 +1,20 @@
+services:
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: engram-searxng
+    restart: unless-stopped
+    network_mode: host       # bypass docker bridge (DNS/forwarding issues on this host)
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+      - ./limiter.toml:/etc/searxng/limiter.toml:ro
+    environment:
+      - SEARXNG_BASE_URL=http://127.0.0.1:8888/
+      - GRANIAN_HOST=127.0.0.1
+      - GRANIAN_PORT=8888
+      - UWSGI_WORKERS=2
+      - UWSGI_THREADS=4
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

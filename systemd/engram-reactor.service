@@ -1,0 +1,16 @@
+[Unit]
+Description=Engram reactor (embed, staleness, near-dup post-check)
+After=network.target
+
+[Service]
+Type=simple
+Environment=ENGRAM_CONFIG=%h/.engram/config.yml
+EnvironmentFile=-%h/.engram/.env
+ExecStart=%h/.engram/.venv/bin/engram-reactor
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
