@@ -5,6 +5,7 @@ Outcomes:
   - 'exact_dup'  : SHA-256 collision, no-op (existing hash returned)
   - 'near_dup'   : embedding cosine > threshold, merged into existing entry
   - 'contradicts': flagged for human resolution (high overlap + high disagreement signal — stub for now)
+  - 'superseded' : same source_url, different bytes — old row marked is_current=0, new row inserted with bumped revision
 """
 from __future__ import annotations
 
@@ -76,13 +77,18 @@ def insert_content(
     confidence: float = 0.5,
     ttl_days: int | None = None,
     kind: str = "kb",
+    revision: int = 1,
+    is_current: int = 1,
+    source_id: str | None = None,
 ) -> str:
     h = content_hash(body)
     conn.execute(
         """INSERT OR IGNORE INTO content
-           (hash, body, title, source_url, source_tier, fetched_at, confidence, ttl_days, kind)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (h, body, title, source_url, source_tier, fetched_at, confidence, ttl_days, kind),
+           (hash, body, title, source_url, source_tier, fetched_at, confidence, ttl_days,
+            kind, revision, is_current, source_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (h, body, title, source_url, source_tier, fetched_at, confidence, ttl_days,
+         kind, revision, is_current, source_id),
     )
     return h
 
@@ -122,14 +128,11 @@ def gate(
             (source_url,),
         ).fetchone()
         if live:
-            new_revision = int(live["revision"]) + 1
-            conn.execute(
-                """INSERT INTO content
-                   (hash, body, title, source_url, source_tier, fetched_at,
-                    confidence, ttl_days, kind, revision, is_current, source_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)""",
-                (h, body, title, source_url, source_tier, None,
-                 confidence, ttl_days, kind, new_revision, None),
+            new_revision = live["revision"] + 1
+            insert_content(
+                conn, body=body, title=title, source_url=source_url,
+                source_tier=source_tier, confidence=confidence, ttl_days=ttl_days,
+                kind=kind, revision=new_revision, is_current=1, source_id=None,
             )
             conn.execute(
                 "UPDATE content SET is_current = 0, superseded_by = ? WHERE hash = ?",

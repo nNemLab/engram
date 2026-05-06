@@ -71,7 +71,7 @@ def test_supersede_emits_event(conn):
     r2 = gate(conn, body="v2", source_url="https://example.com/p", kind="research",
               source_tier="vendor-doc")
     rows = conn.execute(
-        "SELECT type, payload FROM events WHERE type='superseded' ORDER BY id DESC LIMIT 1"
+        "SELECT payload FROM events WHERE type='superseded'"
     ).fetchall()
     assert len(rows) == 1
     payload = json.loads(rows[0]["payload"])
