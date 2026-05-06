@@ -55,8 +55,16 @@ class SitemapAdapter:
             "last_seen_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         })
 
-    async def _collect_urls(self, sitemap_url: str) -> list[str]:
-        """Fetch sitemap.xml; if it's a sitemap-index, descend one level."""
+    async def _collect_urls(self, sitemap_url: str, _depth: int = 0) -> list[str]:
+        """Fetch sitemap.xml; if it's a sitemap-index, descend one level.
+
+        Bounded to depth 1 (top-level index → leaf sitemaps). A sitemap-index
+        nested inside another sitemap-index is rejected to avoid runaway
+        crawls on malformed or adversarial sitemaps.
+        """
+        if _depth > 1:
+            logger.warning("sitemap recursion depth exceeded at %s; skipping", sitemap_url)
+            return []
         out: list[str] = []
         resp = await self._client.get(sitemap_url)
         resp.raise_for_status()
@@ -64,7 +72,7 @@ class SitemapAdapter:
         if root.tag.endswith("sitemapindex"):
             for sm in root.findall("sm:sitemap/sm:loc", NS):
                 if sm.text:
-                    out.extend(await self._collect_urls(sm.text.strip()))
+                    out.extend(await self._collect_urls(sm.text.strip(), _depth + 1))
         else:
             for loc in root.findall("sm:url/sm:loc", NS):
                 if loc.text:
