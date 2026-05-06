@@ -158,3 +158,115 @@ async def test_maxlag_error_raises():
     src = _src()
     with pytest.raises(Exception):
         [c async for c in adapter.fetch(src)]
+
+
+@pytest.mark.asyncio
+async def test_subsequent_run_uses_recentchanges():
+    """When cursor has last_rc_at, adapter queries recentchanges (not allpages)."""
+    rc = (FIX / "recentchanges_response.json").read_text()
+    parse_resp = (FIX / "parse_response.json").read_text()
+    state = {"calls": []}
+
+    def h(req):
+        action = req.url.params.get("action")
+        list_ = req.url.params.get("list")
+        state["calls"].append((action, list_, req.url.params.get("page")))
+        if action == "query" and list_ == "recentchanges":
+            return httpx.Response(200, text=rc)
+        if action == "query" and list_ == "allpages":
+            raise AssertionError("allpages should not be queried with cursor present")
+        if action == "parse":
+            return httpx.Response(200, text=parse_resp)
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(h)
+    adapter = MediaWikiApiAdapter(_client=httpx.AsyncClient(transport=transport))
+    src = _src(cursor=json.dumps({
+        "last_rc_at": "2026-05-05T00:00:00Z",
+        "api_endpoint": "https://wiki.example.com/api.php",
+    }))
+    cands = [c async for c in adapter.fetch(src)]
+
+    # 2 unique pages (Engine edited twice → fetched once; Kestrel created)
+    titles = sorted(c.title for c in cands)
+    assert titles == ["Engine", "Kestrel Mk II"]
+
+    # log entry was filtered, not fetched
+    parse_pages = [c[2] for c in state["calls"] if c[0] == "parse"]
+    assert "Engine" in parse_pages
+    assert "Kestrel Mk II" in parse_pages
+    assert len(parse_pages) == 2
+
+    # rcstart was the cursor timestamp
+    rc_calls = [req for req in state["calls"] if req[1] == "recentchanges"]
+    assert len(rc_calls) >= 1
+    # cursor advanced
+    new_cursor = json.loads(src["cursor"])
+    assert new_cursor["last_rc_at"] != "2026-05-05T00:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_recentchanges_empty_yields_zero():
+    """No changes since cursor → zero candidates, zero parse calls."""
+    state = {"parse_calls": 0}
+
+    def h(req):
+        action = req.url.params.get("action")
+        if action == "query":
+            return httpx.Response(200, text=json.dumps({
+                "batchcomplete": "",
+                "query": {"recentchanges": []},
+            }))
+        if action == "parse":
+            state["parse_calls"] += 1
+            return httpx.Response(200, text=json.dumps({"parse": {"title": "x", "text": {"*": "x"}}}))
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(h)
+    adapter = MediaWikiApiAdapter(_client=httpx.AsyncClient(transport=transport))
+    src = _src(cursor=json.dumps({
+        "last_rc_at": "2026-05-05T00:00:00Z",
+        "api_endpoint": "https://wiki.example.com/api.php",
+    }))
+    cands = [c async for c in adapter.fetch(src)]
+    assert cands == []
+    assert state["parse_calls"] == 0
+
+
+@pytest.mark.asyncio
+async def test_recentchanges_pagination():
+    """rccontinue pagination is followed."""
+    page_1 = json.dumps({
+        "batchcomplete": "",
+        "continue": {"rccontinue": "2026-05-06T10:00:00Z|100", "continue": "-||"},
+        "query": {"recentchanges": [
+            {"type": "edit", "ns": 0, "title": "P1", "pageid": 1, "revid": 1, "timestamp": "2026-05-06T10:00:00Z"},
+        ]},
+    })
+    page_2 = json.dumps({
+        "batchcomplete": "",
+        "query": {"recentchanges": [
+            {"type": "edit", "ns": 0, "title": "P2", "pageid": 2, "revid": 2, "timestamp": "2026-05-06T11:00:00Z"},
+        ]},
+    })
+    parse_resp = (FIX / "parse_response.json").read_text()
+    state = {"call": 0}
+
+    def h(req):
+        action = req.url.params.get("action")
+        if action == "query":
+            state["call"] += 1
+            return httpx.Response(200, text=page_1 if state["call"] == 1 else page_2)
+        if action == "parse":
+            return httpx.Response(200, text=parse_resp)
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(h)
+    adapter = MediaWikiApiAdapter(_client=httpx.AsyncClient(transport=transport))
+    src = _src(cursor=json.dumps({
+        "last_rc_at": "2026-05-05T00:00:00Z",
+        "api_endpoint": "https://wiki.example.com/api.php",
+    }))
+    cands = [c async for c in adapter.fetch(src)]
+    titles = sorted(c.title for c in cands)
+    assert titles == ["P1", "P2"]

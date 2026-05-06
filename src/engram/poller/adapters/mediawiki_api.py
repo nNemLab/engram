@@ -1,14 +1,15 @@
 """MediaWiki API adapter.
 
-Discovers pages via action=query&list=allpages (paginated). Fetches content via
-action=parse&prop=text. Always sends maxlag=5 and assert=anon.
+Discovers pages via action=query&list=allpages (first run) or list=recentchanges
+(incremental). Fetches content via action=parse&prop=text. Always sends maxlag=5
+and assert=anon.
 """
 from __future__ import annotations
 
 import json
 import logging
 from datetime import datetime, timezone
-from typing import AsyncIterator
+from typing import AsyncIterator, Iterable
 from urllib.parse import quote
 
 import httpx
@@ -44,19 +45,32 @@ class MediaWikiApiAdapter:
         wiki_root = source["url"].rstrip("/")
         api_endpoint = f"{wiki_root}/api.php"
 
-        # Collect titles via list=allpages across namespaces, cap at max_pages total
+        cursor = json.loads(source.get("cursor") or "{}")
+        last_rc_at = cursor.get("last_rc_at")
+
+        new_rc_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # Discover titles
         titles: list[str] = []
-        for ns in namespaces:
-            async for title in self._list_allpages(api_endpoint, ns, rate_limiter):
+        if last_rc_at is None:
+            # First run: walk all pages, capped by max_pages_first_run.
+            for ns in namespaces:
+                async for title in self._list_allpages(api_endpoint, ns, rate_limiter):
+                    if not matches_globs(title, include, exclude):
+                        continue
+                    titles.append(title)
+                    if len(titles) >= max_pages:
+                        break
+                if len(titles) >= max_pages:
+                    break
+        else:
+            # Subsequent run: only changed pages since cursor.
+            async for title in self._list_recentchanges(
+                api_endpoint, namespaces, since=last_rc_at, rate_limiter=rate_limiter,
+            ):
                 if not matches_globs(title, include, exclude):
                     continue
                 titles.append(title)
-                if len(titles) >= max_pages:
-                    break
-            if len(titles) >= max_pages:
-                break
-
-        new_rc_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         for title in titles:
             html = await self._parse_page(api_endpoint, title, rate_limiter)
@@ -103,6 +117,50 @@ class MediaWikiApiAdapter:
                 return
             # Copy ALL keys from data["continue"] (some MW versions add companion tokens)
             cont = {k: str(v) for k, v in data["continue"].items()}
+
+    async def _list_recentchanges(
+        self, api_endpoint: str, namespaces: Iterable[int], since: str,
+        rate_limiter: AsyncRateLimiter,
+    ) -> AsyncIterator[str]:
+        """Yield unique page titles changed since `since` (ISO timestamp).
+
+        Uses rcdir=newer with rcstart=<since> so we walk forward in time and the
+        last entry's timestamp is the new cursor. Filters to type ∈ {edit, new}.
+        Yields each title at most once per call (deduped across edits).
+        """
+        seen: set[str] = set()
+        for ns in namespaces:
+            cont: dict[str, str] = {}
+            while True:
+                params = {
+                    **ALWAYS_PARAMS,
+                    "action": "query",
+                    "list": "recentchanges",
+                    "rcdir": "newer",
+                    "rcstart": since,
+                    "rcnamespace": str(ns),
+                    "rclimit": "500",
+                    "rcprop": "title|timestamp|ids|type",
+                }
+                params.update(cont)
+                result = await fetch_with_politeness(
+                    self._client, api_endpoint, extra_params=params, rate_limiter=rate_limiter,
+                )
+                if result is None:
+                    return
+                data = json.loads(result.body)
+                _check_api_error(data)
+                for row in data.get("query", {}).get("recentchanges", []):
+                    if row.get("type") not in ("edit", "new"):
+                        continue
+                    title = row.get("title")
+                    if not title or title in seen:
+                        continue
+                    seen.add(title)
+                    yield title
+                if "continue" not in data:
+                    break
+                cont = {k: str(v) for k, v in data["continue"].items()}
 
     async def _parse_page(
         self, api_endpoint: str, title: str, rate_limiter: AsyncRateLimiter,
