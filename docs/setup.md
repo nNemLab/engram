@@ -91,9 +91,23 @@ schedule. Register one via the `eos-source` CLI or the `sources.add` MCP tool:
   --schedule 7d
 ```
 
-Two adapter types in v0.2: `sitemap` and `github-repo`. See
-`docs/superpowers/specs/2026-05-06-source-curation-design.md` for the full
-contract and the `sources.*` MCP namespace in `mcp-tool-reference.md`.
+Four adapter types in v0.3:
+
+- `sitemap` — site with a public `sitemap.xml`.
+- `github-repo` — public docs-as-markdown repo (uses GitHub compare API).
+- `mediawiki-api` — any MediaWiki wiki via `/api.php` (Fandom, PCGamingWiki,
+  Wikipedia). Walks via `list=allpages`; tracks updates via
+  `list=recentchanges`. Sends `maxlag=5` automatically.
+- `urls` — manually curated list of URLs for sites with no sitemap and no API.
+
+Identify the operator to providers: set `poller.http.contact` in
+`~/.engram/config.yml` (an email or repo URL). Used in the `User-Agent`
+header so well-behaved sources can route abuse reports to you instead of
+blocking blindly.
+
+See `docs/superpowers/specs/2026-05-06-adapter-expansion-design.md` for the
+adapter contracts and per-adapter politeness defaults; `mcp-tool-reference.md`
+for the `sources.*` namespace.
 
 Try the round trip:
 ```bash

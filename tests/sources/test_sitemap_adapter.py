@@ -102,6 +102,6 @@ async def test_updates_cursor_etags(monkeypatch):
     async for _ in adapter.fetch(src):
         pass
     new_cursor = json.loads(src["cursor"])
-    assert "etags" in new_cursor
-    assert new_cursor["etags"]["https://docs.example.com/engine/install/linux/"] == \
+    assert "cache" in new_cursor
+    assert new_cursor["cache"]["https://docs.example.com/engine/install/linux/"]["etag"] == \
         '"etag-/engine/install/linux/"'

@@ -6,7 +6,12 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
-DEFAULT_SCHEDULE = {"sitemap": "7d", "github-repo": "1d"}
+DEFAULT_SCHEDULE = {
+    "sitemap":       "7d",
+    "github-repo":   "1d",
+    "mediawiki-api": "7d",
+    "urls":          "7d",
+}
 
 
 def _utcnow_iso() -> str:
@@ -119,7 +124,7 @@ def register(conn: sqlite3.Connection) -> dict[str, dict]:
                 "properties": {
                     "id":          {"type": "string"},
                     "name":        {"type": "string"},
-                    "adapter":     {"type": "string", "enum": ["sitemap", "github-repo"]},
+                    "adapter":     {"type": "string", "enum": ["sitemap", "github-repo", "mediawiki-api", "urls"]},
                     "url":         {"type": "string"},
                     "config":      {"type": "object"},
                     "schedule":    {"type": "string"},

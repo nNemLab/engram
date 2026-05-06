@@ -13,9 +13,26 @@ import httpx
 import trafilatura
 
 from . import Adapter, Candidate, matches_globs, register
+from ._http import AsyncRateLimiter, FetchResult, HTTPCacheEntry, fetch_with_politeness
 
 logger = logging.getLogger("engram.poller.sitemap")
 NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+
+
+def _read_cache(cursor: dict) -> dict[str, HTTPCacheEntry]:
+    """Read cache from cursor in either v0.2 (etags) or v0.3 (cache) shape."""
+    cache: dict[str, HTTPCacheEntry] = {}
+    if "cache" in cursor:
+        for url, entry in cursor["cache"].items():
+            cache[url] = HTTPCacheEntry(
+                etag=entry.get("etag"),
+                last_modified=entry.get("last_modified"),
+            )
+    elif "etags" in cursor:
+        # v0.2 legacy
+        for url, etag in cursor["etags"].items():
+            cache[url] = HTTPCacheEntry(etag=etag)
+    return cache
 
 
 class SitemapAdapter:
@@ -32,26 +49,46 @@ class SitemapAdapter:
         include = cfg.get("include", [])
         exclude = cfg.get("exclude", [])
         cursor = json.loads(source.get("cursor") or "{}")
-        etags: dict[str, str] = cursor.get("etags", {})
+
+        interval_ms = cfg.get("request_interval_ms", 1000)
+        self._rate_limiter = AsyncRateLimiter(interval_ms=interval_ms)
+
+        cache = _read_cache(cursor)
 
         urls = await self._collect_urls(source["url"])
-        new_etags: dict[str, str] = {}
+        new_cache: dict[str, HTTPCacheEntry] = {}
         for u in urls:
             if not matches_globs(u, include, exclude):
                 continue
-            previous = etags.get(u)
-            cand = await self._fetch_one(u, previous_etag=previous)
-            if cand is None:
-                if previous:
-                    new_etags[u] = previous
+            entry = cache.get(u)
+            result = await fetch_with_politeness(
+                self._client, u, cache=entry, rate_limiter=self._rate_limiter
+            )
+            if result is None:
+                # 304 — preserve existing cache entry
+                if entry is not None:
+                    new_cache[u] = entry
                 continue
-            etag, candidate = cand
-            if etag:
-                new_etags[u] = etag
-            yield candidate
+            # Extract text
+            body_html = result.body
+            extracted = trafilatura.extract(body_html, include_comments=False) or body_html
+            title = trafilatura.extract_metadata(body_html)
+            title_str = title.title if title and title.title else None
+            cand = Candidate(
+                source_url=u,
+                body=extracted,
+                title=title_str,
+                fetched_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                metadata={"etag": result.etag, "content_type": result.content_type},
+            )
+            new_cache[u] = HTTPCacheEntry(etag=result.etag, last_modified=result.last_modified)
+            yield cand
 
         source["cursor"] = json.dumps({
-            "etags": new_etags,
+            "cache": {
+                url: {"etag": entry.etag, "last_modified": entry.last_modified}
+                for url, entry in new_cache.items()
+            },
             "last_seen_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         })
 
@@ -78,30 +115,6 @@ class SitemapAdapter:
                 if loc.text:
                     out.append(loc.text.strip())
         return out
-
-    async def _fetch_one(
-        self, url: str, *, previous_etag: str | None
-    ) -> tuple[str | None, Candidate] | None:
-        headers: dict[str, str] = {}
-        if previous_etag:
-            headers["if-none-match"] = previous_etag
-        resp = await self._client.get(url, headers=headers)
-        if resp.status_code == 304:
-            return None
-        resp.raise_for_status()
-        body_html = resp.text
-        extracted = trafilatura.extract(body_html, include_comments=False) or body_html
-        title = trafilatura.extract_metadata(body_html)
-        title_str = title.title if title and title.title else None
-        etag = resp.headers.get("etag")
-        cand = Candidate(
-            source_url=url,
-            body=extracted,
-            title=title_str,
-            fetched_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            metadata={"etag": etag, "content_type": resp.headers.get("content-type")},
-        )
-        return etag, cand
 
 
 register(SitemapAdapter())
