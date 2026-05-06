@@ -46,3 +46,7 @@ packages = ["src/engram"]
 [tool.ruff]
 line-length = 110
 target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
