@@ -17,7 +17,7 @@ from typing import Literal
 from .common.config import load_config
 from . import log as event_log
 
-Outcome = Literal["new", "exact_dup", "near_dup", "contradicts"]
+Outcome = Literal["new", "exact_dup", "near_dup", "contradicts", "superseded"]
 
 
 @dataclass
@@ -111,6 +111,41 @@ def gate(
 
     if find_exact(conn, h):
         return GateResult(outcome="exact_dup", hash=h)
+
+    # Source-URL supersede: if a live entry exists at the same source_url with
+    # different bytes, treat this write as a new revision rather than a fresh ingest.
+    if source_url:
+        live = conn.execute(
+            "SELECT hash, revision FROM content "
+            "WHERE source_url = ? AND is_current = 1 AND tombstoned = 0 "
+            "ORDER BY revision DESC LIMIT 1",
+            (source_url,),
+        ).fetchone()
+        if live:
+            new_revision = int(live["revision"]) + 1
+            conn.execute(
+                """INSERT INTO content
+                   (hash, body, title, source_url, source_tier, fetched_at,
+                    confidence, ttl_days, kind, revision, is_current, source_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)""",
+                (h, body, title, source_url, source_tier, None,
+                 confidence, ttl_days, kind, new_revision, None),
+            )
+            conn.execute(
+                "UPDATE content SET is_current = 0, superseded_by = ? WHERE hash = ?",
+                (h, live["hash"]),
+            )
+            event_log.append(
+                conn, "superseded",
+                {
+                    "hash_old": live["hash"],
+                    "hash_new": h,
+                    "source_url": source_url,
+                    "revision": new_revision,
+                },
+                actor=actor, correlation_id=correlation_id,
+            )
+            return GateResult(outcome="superseded", hash=h)
 
     if embedding is not None:
         near = find_near(conn, embedding, cfg.rag.near_dup_threshold)
