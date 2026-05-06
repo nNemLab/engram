@@ -192,4 +192,4 @@ After `v0.1.0`, this project follows [SemVer 2.0.0](https://semver.org/): breaki
 
 ## License
 
-Not yet specified. Treat as "all rights reserved" until a license is added.
+[AGPL-3.0-or-later](LICENSE). If you run a modified version of Engram as a network service, you must offer your users the modified source under the same license.
