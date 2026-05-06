@@ -82,6 +82,37 @@ def _handle_event(conn: sqlite3.Connection, vault: Path, evt: event_log.Event,
                 conn.execute("DELETE FROM vault_state WHERE content_hash = ?", (tombstoned,))
         if kept:
             _project_one(conn, vault, kept, kind_dirs)
+    elif evt.type == "superseded":
+        hash_old = evt.payload.get("hash_old")
+        hash_new = evt.payload.get("hash_new")
+        old_state = conn.execute(
+            "SELECT vault_path, rendered_body FROM vault_state WHERE content_hash = ?",
+            (hash_old,),
+        ).fetchone()
+        if old_state and old_state["vault_path"]:
+            old_path = old_state["vault_path"]
+            new_row = conn.execute(
+                "SELECT * FROM content WHERE hash = ? AND tombstoned = 0",
+                (hash_new,),
+            ).fetchone()
+            if new_row:
+                renderer = RENDERERS.get(new_row["kind"], RENDERERS["kb"])
+                kind_dir = kind_dirs.get(new_row["kind"], kind_dirs.get("kb", "050-kb"))
+                _, body = renderer(new_row, kind_dir)
+                abs_path = vault / old_path
+                abs_path.parent.mkdir(parents=True, exist_ok=True)
+                abs_path.write_text(body)
+                now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                conn.execute("DELETE FROM vault_state WHERE content_hash = ?", (hash_old,))
+                conn.execute(
+                    "INSERT INTO vault_state (vault_path, content_hash, rendered_body, rendered_at) "
+                    "VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(vault_path) DO UPDATE SET content_hash=excluded.content_hash, "
+                    "rendered_body=excluded.rendered_body, rendered_at=excluded.rendered_at",
+                    (old_path, hash_new, body, now),
+                )
+                conn.execute("UPDATE content SET vault_path = ? WHERE hash = ?",
+                             (old_path, hash_new))
 
 
 def run() -> None:
@@ -97,7 +128,7 @@ def run() -> None:
     while True:
         try:
             last_seen = cursor
-            for evt in event_log.since(conn, cursor, types=["ingested", "merged"]):
+            for evt in event_log.since(conn, cursor, types=["ingested", "merged", "superseded"]):
                 _handle_event(conn, vault, evt, cfg.projector.kind_dirs)
                 last_seen = evt.id
             if last_seen != cursor:
