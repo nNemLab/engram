@@ -1,5 +1,8 @@
 -- 002: sources registry + content revision chain.
--- Idempotent: run after 001_initial.sql on existing dbs to upgrade.
+--
+-- NOT idempotent. SQLite has no `ADD COLUMN IF NOT EXISTS`; re-running on a
+-- DB already at version 2 will error on the ALTER statements. Migrations
+-- are gated by `schema_version`; apply once.
 
 PRAGMA foreign_keys = ON;
 
@@ -18,8 +21,8 @@ CREATE TABLE IF NOT EXISTS sources (
     cursor          TEXT,
     error_count     INTEGER NOT NULL DEFAULT 0,
     last_error      TEXT,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_sources_due
@@ -34,3 +37,5 @@ CREATE INDEX IF NOT EXISTS idx_content_url_current
     ON content(source_url, is_current);
 CREATE INDEX IF NOT EXISTS idx_content_source
     ON content(source_id, is_current);
+
+INSERT OR IGNORE INTO schema_version (version) VALUES (2);
