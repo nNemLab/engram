@@ -392,3 +392,28 @@ About 4–6 hours wall-clock at the v0.2 task cadence:
 ## Open questions
 
 None blocking. The cursor migration on `sitemap` (etags → cache) is the only piece of mild risk; mitigated by the adapter reading either shape on first poll after upgrade.
+
+## Outcome — live smoke test (2026-05-06)
+
+Both adapters validated against real Elite Dangerous sources after restarting the poller:
+
+```
+ed-fandom (mediawiki-api):
+  url=https://elite-dangerous.fandom.com
+  config={namespaces:[0], max_pages_first_run:100, exclude:["File:*","User:*","Category:*","Template:*"]}
+  result: 100 live entries (cap reached), 0 errors, 0 superseded
+  cursor: last_rc_at populated, api_endpoint=https://elite-dangerous.fandom.com/api.php
+
+ed-references (urls):
+  config={urls:["https://en.wikipedia.org/wiki/Elite_Dangerous", "https://ed.tools/"]}
+  result: 2 live entries, 0 errors
+  cursor: cache populated for both URLs (etag, last_modified)
+```
+
+Confirms:
+- MediaWiki API endpoint is **not** Cloudflare-gated — the adapter walked Fandom's allpages and parsed every page successfully where the v0.2 sitemap adapter got 403.
+- URL adapter handles arbitrary single-page targets (Wikipedia article, dashboard page).
+- All ED content rendered into the vault under `030-research/`. Vault now has 286 files (Docker docs from v0.2 + Engram operational entries + ED entries).
+- trafilatura logged "empty HTML tree" warnings on a few pages; the adapter's `or html` fallback ensured those pages still ingested with raw HTML body. Worth tracking but non-fatal.
+
+The 100-page first-run cap was deliberately set low for the smoke; production would use the default 1000 or remove the cap. With the 1500ms rate limit, 100 pages took ~2.5 minutes; 1000 pages would take ~25 min.
