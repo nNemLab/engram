@@ -51,29 +51,49 @@ Restart Claude Code. The `kb.*`, `rag.*`, `research.*`, `playbook.*`, and
 
 ### 5. Run the daemons
 
-Three long-running processes. Pick one:
+Four long-running processes. Pick one:
 
-**Quick start (three shells):**
+**Quick start (four shells):**
 ```bash
 engram-projector   # log -> vault markdown
 engram-watcher     # vault edits -> log
 engram-reactor     # embed, staleness, near-dup post-check
+engram-poller      # poll registered sources on schedule
 ```
 
 **Production (systemd user units):**
-Create `~/.config/systemd/user/engram-{projector,watcher,reactor}.service`,
-each with `ExecStart=/path/to/engram-<name>`. Then:
+Copy `systemd/engram-{projector,watcher,reactor,poller}.service` into
+`~/.config/systemd/user/`, then:
 ```bash
-systemctl --user enable --now engram-projector engram-watcher engram-reactor
+systemctl --user daemon-reload
+systemctl --user enable --now engram-projector engram-watcher engram-reactor engram-poller
 ```
 
 ### 6. Verify
 
 ```bash
-./bin/aos-status
+./bin/eos-status
 ```
 
 Should report 0 events, 0 content, daemon cursors at 0.
+
+### 7. Optional: register a source
+
+Source curation pulls "official documentation"-shaped feeds into the KB on
+schedule. Register one via the `eos-source` CLI or the `sources.add` MCP tool:
+
+```bash
+./bin/eos-source add docker-docs-linux \
+  --name "Docker Docs (Linux)" \
+  --adapter sitemap \
+  --url https://docs.docker.com/sitemap.xml \
+  --include '*/engine/*' --include '*/desktop/install/linux*' \
+  --schedule 7d
+```
+
+Two adapter types in v0.2: `sitemap` and `github-repo`. See
+`docs/superpowers/specs/2026-05-06-source-curation-design.md` for the full
+contract and the `sources.*` MCP namespace in `mcp-tool-reference.md`.
 
 Try the round trip:
 ```bash

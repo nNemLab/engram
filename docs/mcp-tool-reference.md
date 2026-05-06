@@ -45,6 +45,27 @@ is a quick reference.
 - **`goals.list`** — Active goals, ordered by priority.
 - **`goals.resolve`** — Mark resolved.
 
+## sources.*
+
+Curated polled feeds. Each source picks an adapter (`sitemap` or `github-repo`),
+a URL, optional include/exclude globs, and a schedule. The poller daemon walks
+due sources, runs each candidate through the dedup gate, and emits new revisions
+when content changes (`superseded` outcome).
+
+- **`sources.add`** — Register a new polled source. Required: `id`, `name`,
+  `adapter`, `url`. Optional: `config` (adapter-specific globs / branch),
+  `schedule` (default per-adapter: `7d` for sitemap, `1d` for github-repo),
+  `source_tier` (default `vendor-doc`), `paused`.
+- **`sources.list`** — All sources with state. Filters: `paused_only`,
+  `with_errors`.
+- **`sources.get`** — Full record by id (cursor truncated if large).
+- **`sources.set`** — Update one or more fields on an existing source.
+  `config` replaces existing wholesale (currently — see follow-ups).
+- **`sources.remove`** — Delete a source row. Does NOT tombstone its content;
+  `kb.tombstone` content first if you want a clean removal.
+- **`sources.fetch_now`** — Force immediate poll on next 60s tick (sets
+  `next_poll_at = NULL`).
+
 ## Adding a tool
 
 1. In `src/engram/mcp_server/tools/<ns>.py`, add a handler to the dict

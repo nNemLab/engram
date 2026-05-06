@@ -464,3 +464,27 @@ ls ~/.engram/vault/030-research/    # rendered markdown
 ## Open questions
 
 None blocking. The only deferred decision (`as_of` query path: events-walk vs. valid_from/valid_to columns) is reversible and can be revisited if usage shows the perf hit matters.
+
+## Outcome — first live source
+
+Implemented across 16 commits on `feature/source-curation` (2026-05-06). End-to-end smoke test:
+
+```
+sources.add docker-docs-linux  --adapter sitemap
+                                --url https://docs.docker.com/sitemap.xml
+                                --include '*/engine/*' '*/desktop/install/linux*'
+                                --exclude '*/manuals/desktop/install/macos*'
+                                          '*/manuals/desktop/install/windows*'
+                                --schedule 7d
+sources.fetch_now docker-docs-linux
+```
+
+Result on first poll:
+- candidates_seen: 178 (sitemap-filtered URLs)
+- ingested: 178 (all `new`, revision=1, is_current=1)
+- superseded: 0, exact_dup: 0, errors: 0
+- cursor populated (per-URL ETags)
+- next_poll_at: 7 days out
+- vault: 178 Markdown files rendered under `030-research/` via URL-derived stable paths
+
+One regression caught and fixed at this stage: adapter modules weren't auto-imported, so `ADAPTERS["sitemap"]` was empty in the running daemon. Fixed by eager-importing both adapters at the bottom of `src/engram/poller/adapters/__init__.py`. Tests pre-existed for the adapters individually but didn't cover the runtime registration path; the integration test (Task 12) had been working around this with an explicit `import engram.poller.adapters.sitemap` in the test body.

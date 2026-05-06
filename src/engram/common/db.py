@@ -10,7 +10,8 @@ import sqlite_vec
 
 from .config import load_config
 
-SCHEMA_PATH = Path(__file__).resolve().parents[3] / "schema" / "001_initial.sql"
+SCHEMA_DIR = Path(__file__).resolve().parents[3] / "schema"
+SCHEMA_PATH = SCHEMA_DIR / "001_initial.sql"
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -33,6 +34,28 @@ def init_schema(conn: sqlite3.Connection, embed_dim: int = 384) -> None:
         f"CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0("
         f"content_hash TEXT PRIMARY KEY, embedding FLOAT[{embed_dim}])"
     )
+    _apply_pending_migrations(conn)
+
+
+def _apply_pending_migrations(conn: sqlite3.Connection) -> None:
+    """Apply any schema/NNN_*.sql files past the highest applied version.
+
+    Migration files are NOT idempotent in general (SQLite has no `ADD COLUMN
+    IF NOT EXISTS`), so we gate strictly on the schema_version table. Each
+    migration is expected to insert its own version row.
+    """
+    row = conn.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
+    current = int(row["v"] or 0) if row else 0
+    pending: list[tuple[int, Path]] = []
+    for p in sorted(SCHEMA_DIR.glob("[0-9][0-9][0-9]_*.sql")):
+        try:
+            version = int(p.name.split("_", 1)[0])
+        except ValueError:
+            continue
+        if version > current:
+            pending.append((version, p))
+    for version, path in pending:
+        conn.executescript(path.read_text())
 
 
 @contextmanager

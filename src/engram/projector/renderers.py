@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 from typing import Callable
+from urllib.parse import urlparse
 
 import yaml
 
@@ -33,8 +34,19 @@ def render_kb(row: sqlite3.Row, kind_dir: str) -> tuple[str, str]:
         "confidence": row["confidence"],
         "ttl_days": row["ttl_days"],
     }
-    slug = _safe_slug(row["title"], row["hash"][:12])
-    path = f"{kind_dir}/{slug}-{row['hash'][:8]}.md"
+    try:
+        sid = row["source_id"]
+    except (KeyError, IndexError):
+        sid = None
+    if row["source_url"] and sid:
+        url_path = urlparse(row["source_url"]).path.rstrip("/")
+        tail = url_path.rsplit("/", 1)[-1] or "index"
+        slug = _safe_slug(tail, row["hash"][:12])
+        suffix = sid[:8] or row["hash"][:8]
+        path = f"{kind_dir}/{slug}-{suffix}.md"
+    else:
+        slug = _safe_slug(row["title"], row["hash"][:12])
+        path = f"{kind_dir}/{slug}-{row['hash'][:8]}.md"
     body = _frontmatter(fm) + (row["body"] or "")
     return path, body
 

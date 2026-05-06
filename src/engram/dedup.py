@@ -5,6 +5,7 @@ Outcomes:
   - 'exact_dup'  : SHA-256 collision, no-op (existing hash returned)
   - 'near_dup'   : embedding cosine > threshold, merged into existing entry
   - 'contradicts': flagged for human resolution (high overlap + high disagreement signal — stub for now)
+  - 'superseded' : same source_url, different bytes — old row marked is_current=0, new row inserted with bumped revision
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from typing import Literal
 from .common.config import load_config
 from . import log as event_log
 
-Outcome = Literal["new", "exact_dup", "near_dup", "contradicts"]
+Outcome = Literal["new", "exact_dup", "near_dup", "contradicts", "superseded"]
 
 
 @dataclass
@@ -76,13 +77,18 @@ def insert_content(
     confidence: float = 0.5,
     ttl_days: int | None = None,
     kind: str = "kb",
+    revision: int = 1,
+    is_current: int = 1,
+    source_id: str | None = None,
 ) -> str:
     h = content_hash(body)
     conn.execute(
         """INSERT OR IGNORE INTO content
-           (hash, body, title, source_url, source_tier, fetched_at, confidence, ttl_days, kind)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (h, body, title, source_url, source_tier, fetched_at, confidence, ttl_days, kind),
+           (hash, body, title, source_url, source_tier, fetched_at, confidence, ttl_days,
+            kind, revision, is_current, source_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (h, body, title, source_url, source_tier, fetched_at, confidence, ttl_days,
+         kind, revision, is_current, source_id),
     )
     return h
 
@@ -111,6 +117,38 @@ def gate(
 
     if find_exact(conn, h):
         return GateResult(outcome="exact_dup", hash=h)
+
+    # Source-URL supersede: if a live entry exists at the same source_url with
+    # different bytes, treat this write as a new revision rather than a fresh ingest.
+    if source_url:
+        live = conn.execute(
+            "SELECT hash, revision FROM content "
+            "WHERE source_url = ? AND is_current = 1 AND tombstoned = 0 "
+            "ORDER BY revision DESC LIMIT 1",
+            (source_url,),
+        ).fetchone()
+        if live:
+            new_revision = live["revision"] + 1
+            insert_content(
+                conn, body=body, title=title, source_url=source_url,
+                source_tier=source_tier, confidence=confidence, ttl_days=ttl_days,
+                kind=kind, revision=new_revision, is_current=1, source_id=None,
+            )
+            conn.execute(
+                "UPDATE content SET is_current = 0, superseded_by = ? WHERE hash = ?",
+                (h, live["hash"]),
+            )
+            event_log.append(
+                conn, "superseded",
+                {
+                    "hash_old": live["hash"],
+                    "hash_new": h,
+                    "source_url": source_url,
+                    "revision": new_revision,
+                },
+                actor=actor, correlation_id=correlation_id,
+            )
+            return GateResult(outcome="superseded", hash=h)
 
     if embedding is not None:
         near = find_near(conn, embedding, cfg.rag.near_dup_threshold)
