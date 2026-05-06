@@ -16,7 +16,7 @@ def _parser() -> argparse.ArgumentParser:
     a = sub.add_parser("add", help="register a new source")
     a.add_argument("id")
     a.add_argument("--name", required=True)
-    a.add_argument("--adapter", choices=["sitemap", "github-repo"], required=True)
+    a.add_argument("--adapter", choices=["sitemap", "github-repo", "mediawiki-api", "urls"], required=True)
     a.add_argument("--url", required=True)
     a.add_argument("--include", action="append", default=[])
     a.add_argument("--exclude", action="append", default=[])

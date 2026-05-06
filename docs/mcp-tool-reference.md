@@ -47,15 +47,14 @@ is a quick reference.
 
 ## sources.*
 
-Curated polled feeds. Each source picks an adapter (`sitemap` or `github-repo`),
-a URL, optional include/exclude globs, and a schedule. The poller daemon walks
-due sources, runs each candidate through the dedup gate, and emits new revisions
-when content changes (`superseded` outcome).
+Curated polled feeds. Each source picks one of four adapters, plus a URL,
+optional filters, and a schedule. The poller daemon walks due sources, runs
+each candidate through the dedup gate, and emits new revisions when content
+changes (`superseded` outcome).
 
 - **`sources.add`** — Register a new polled source. Required: `id`, `name`,
-  `adapter`, `url`. Optional: `config` (adapter-specific globs / branch),
-  `schedule` (default per-adapter: `7d` for sitemap, `1d` for github-repo),
-  `source_tier` (default `vendor-doc`), `paused`.
+  `adapter`, `url`. Optional: `config` (adapter-specific), `schedule`
+  (default per adapter), `source_tier` (default `vendor-doc`), `paused`.
 - **`sources.list`** — All sources with state. Filters: `paused_only`,
   `with_errors`.
 - **`sources.get`** — Full record by id (cursor truncated if large).
@@ -65,6 +64,18 @@ when content changes (`superseded` outcome).
   `kb.tombstone` content first if you want a clean removal.
 - **`sources.fetch_now`** — Force immediate poll on next 60s tick (sets
   `next_poll_at = NULL`).
+
+### Adapter types
+
+| Adapter | `url` | Default schedule | Required `config` keys |
+|---|---|---|---|
+| `sitemap` | `<...>/sitemap.xml` | `7d` | optional `include[]`, `exclude[]` (URL globs) |
+| `github-repo` | `https://github.com/<org>/<repo>` | `1d` | optional `branch` (default `main`), `include[]`, `exclude[]` (path globs); honors `$GITHUB_TOKEN` |
+| `mediawiki-api` | wiki root (e.g. `https://elite-dangerous.fandom.com`) | `7d` | optional `namespaces[]` (default `[0]`), `include[]`/`exclude[]` (title globs), `max_pages_first_run` (default 1000) |
+| `urls` | `""` (ignored) | `7d` | required `urls[]` |
+
+All adapters accept an optional `config.request_interval_ms` to override the
+per-adapter default rate limit.
 
 ## Adding a tool
 

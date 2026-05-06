@@ -72,3 +72,4 @@ def register(adapter: Adapter) -> None:
 from . import sitemap as _sitemap  # noqa: E402, F401
 from . import github_repo as _github_repo  # noqa: E402, F401
 from . import mediawiki_api as _mediawiki_api  # noqa: E402, F401
+from . import urls as _urls  # noqa: E402, F401

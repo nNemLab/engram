@@ -2,7 +2,7 @@
 
 **A personal knowledge platform built around an append-only event log, projected into an Obsidian vault, accessed by agents over MCP.**
 
-> **Status:** `v0.2.0-alpha.1` — dev build. APIs, schema, and on-disk layout may change without migration paths until `v0.1.0`.
+> **Status:** `v0.3.0-alpha.1` — dev build. APIs, schema, and on-disk layout may change without migration paths until `v0.1.0`.
 
 ---
 
@@ -107,12 +107,14 @@ Add a handler by registering it in `handlers.HANDLERS`.
 - **`research_ingest_url`** runs server-side (host fetch + extract + dedup); **`research_fetch_url`** stamps a body the caller already fetched.
 
 ### Source curation (`src/engram/poller/`)
-Polled, declarative source subscriptions. `sources.add` registers a feed; the `engram-poller` daemon picks it up on its 60 s tick, dispatches the named adapter, and pushes each candidate through the dedup gate. Two adapters in v0.2:
+Polled, declarative source subscriptions. `sources.add` registers a feed; the `engram-poller` daemon picks it up on its 60 s tick, dispatches the named adapter, and pushes each candidate through the dedup gate. Four adapters in v0.3:
 
-- **`sitemap`** — walks `sitemap.xml` (incl. sitemap-index files), filters URLs through include/exclude globs, fetches with ETag-based 304 handling, extracts via trafilatura.
+- **`sitemap`** — walks `sitemap.xml` (incl. sitemap-index files), filters URLs through include/exclude globs, fetches with ETag + Last-Modified conditional GETs, extracts via trafilatura.
 - **`github-repo`** — branch HEAD lookup; first run walks the tree, subsequent runs use the GitHub `compare` API for incremental updates. Honors `$GITHUB_TOKEN` if present.
+- **`mediawiki-api`** — talks directly to a wiki's `/api.php` (Fandom, Wikipedia, PCGamingWiki, ED-Codex, anything MediaWiki). Discovers pages via `list=allpages` on first run; tracks updates via `list=recentchanges` on subsequent runs. Always sends `maxlag=5` and `assert=anon`. Bypasses Cloudflare HTML gating since the API endpoint isn't gated the same way.
+- **`urls`** — manually curated list of URLs for sites with no sitemap and no API (Wikipedia single articles, Inara reference pages, dashboards). Same conditional-GET caching as sitemap.
 
-When upstream content changes, the dedup gate's `superseded` outcome chains revisions: old rows get `is_current=0` (still queryable for `as_of` retrieval), the new row becomes current, the vault file overwrites in place. Per-source schedules (default `7d` for sitemap, `1d` for github-repo) and a 5-error circuit breaker. Full spec: [docs/superpowers/specs/2026-05-06-source-curation-design.md](docs/superpowers/specs/2026-05-06-source-curation-design.md).
+All four adapters share a `fetch_with_politeness` helper that honors `Retry-After` on 429/503, sends both `If-None-Match` and `If-Modified-Since`, and rate-limits per source. When upstream content changes, the dedup gate's `superseded` outcome chains revisions: old rows get `is_current=0` (still queryable), the new row becomes current, the vault file overwrites in place. Per-adapter schedules and a 5-error circuit breaker. Specs: [v0.2 source curation](docs/superpowers/specs/2026-05-06-source-curation-design.md), [v0.3 adapter expansion](docs/superpowers/specs/2026-05-06-adapter-expansion-design.md).
 
 CLI mirror: `bin/eos-source` for shell-side ops without going through MCP.
 
