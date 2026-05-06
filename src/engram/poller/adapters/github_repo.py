@@ -33,7 +33,7 @@ class GitHubRepoAdapter:
     def __init__(
         self,
         *,
-        _client: httpx.AsyncClient | None = None,
+        _transport: httpx.AsyncBaseTransport | None = None,
         user_agent: str = "engram/0.1 (+source-poller)",
     ) -> None:
         token = os.environ.get("GITHUB_TOKEN")
@@ -41,17 +41,10 @@ class GitHubRepoAdapter:
                                     "accept": "application/vnd.github+json"}
         if token:
             headers["authorization"] = f"Bearer {token}"
-        if _client is not None:
-            # Injected client (tests): wrap it with our base_url so relative paths work.
-            self._client = httpx.AsyncClient(
-                transport=_client._transport,
-                base_url=self._API_BASE,
-                headers=headers,
-            )
-        else:
-            self._client = httpx.AsyncClient(
-                base_url=self._API_BASE, headers=headers, timeout=30.0,
-            )
+        kwargs: dict = dict(base_url=self._API_BASE, headers=headers, timeout=30.0)
+        if _transport is not None:
+            kwargs["transport"] = _transport
+        self._client = httpx.AsyncClient(**kwargs)
 
     async def fetch(self, source: dict) -> AsyncIterator[Candidate]:
         cfg = json.loads(source.get("config") or "{}")

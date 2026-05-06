@@ -41,7 +41,7 @@ async def test_first_run_walks_tree_and_filters(monkeypatch):
         return httpx.Response(404)
 
     transport = httpx.MockTransport(handler)
-    adapter = GitHubRepoAdapter(_client=httpx.AsyncClient(transport=transport))
+    adapter = GitHubRepoAdapter(_transport=transport)
 
     src = _src()
     cands = [c async for c in adapter.fetch(src)]
@@ -73,7 +73,7 @@ async def test_subsequent_run_uses_compare(monkeypatch):
         return httpx.Response(404)
 
     transport = httpx.MockTransport(handler)
-    adapter = GitHubRepoAdapter(_client=httpx.AsyncClient(transport=transport))
+    adapter = GitHubRepoAdapter(_transport=transport)
 
     src = _src(cursor=json.dumps({"last_sha": "head1"}))
     cands = [c async for c in adapter.fetch(src)]
