@@ -65,3 +65,9 @@ ADAPTERS: dict[str, Adapter] = {}
 
 def register(adapter: Adapter) -> None:
     ADAPTERS[adapter.name] = adapter
+
+
+# Eager-import adapters so they self-register into ADAPTERS on package import.
+# Placed at module bottom so register() is defined before adapter modules call it.
+from . import sitemap as _sitemap  # noqa: E402, F401
+from . import github_repo as _github_repo  # noqa: E402, F401
