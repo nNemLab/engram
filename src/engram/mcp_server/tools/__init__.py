@@ -5,7 +5,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from . import kb, rag, research, playbook, goals
+from . import kb, rag, research, playbook, goals, sources
 
 
 @dataclass
@@ -17,7 +17,7 @@ class ToolSpec:
 
 def build_registry(conn: sqlite3.Connection) -> dict[str, ToolSpec]:
     registry: dict[str, ToolSpec] = {}
-    for mod in (kb, rag, research, playbook, goals):
+    for mod in (kb, rag, research, playbook, goals, sources):
         for name, spec in mod.register(conn).items():
             registry[name] = ToolSpec(**spec) if isinstance(spec, dict) else spec
     return registry
