@@ -2,8 +2,17 @@ name: CI
 
 on:
   pull_request:
+    # Skip CI for doc-only changes (nothing here affects lint or the unit suite).
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
   push:
     branches: [main]
+
+# setup-uv@v6 still bundles a Node 20 entrypoint; opt JS actions into Node 24
+# now (GitHub force-migrates on 2026-06-16 regardless). Clears the deprecation.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 # Cancel superseded runs on the same ref (e.g. force-pushes to a PR branch).
 concurrency:
@@ -15,12 +24,15 @@ jobs:
     name: lint + unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          # No uv.lock is committed; key the cache on pyproject.toml so it
+          # invalidates when deps change instead of "never invalidating".
+          cache-dependency-glob: '**/pyproject.toml'
 
       - name: Pin Python 3.11
         run: uv python install 3.11
