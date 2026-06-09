@@ -1,11 +1,12 @@
 name: CI
 
+# Always triggers (no paths-ignore) so the "lint + unit tests" check ALWAYS
+# reports — required-branch-protection needs that, or doc-only PRs would be
+# blocked forever waiting on a check that never runs. Doc-only changes are
+# detected below and short-circuit to an instant pass instead of running the
+# full suite.
 on:
   pull_request:
-    # Skip CI for doc-only changes (nothing here affects lint or the unit suite).
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
   push:
     branches: [main]
 
@@ -25,8 +26,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0          # need history to diff against the PR base
+
+      # Decide whether anything other than docs changed. If only **.md / docs/**
+      # changed, code=false and the heavy steps below are skipped — the job still
+      # completes successfully, satisfying the required check in ~10s.
+      - name: Detect non-doc changes
+        id: filter
+        run: |
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$base" ] || ! git rev-parse -q --verify "$base^{commit}" >/dev/null 2>&1; then
+            echo "base unknown — running full suite"
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed="$(git diff --name-only "$base" HEAD)"
+          echo "Changed files:"; printf '%s\n' "$changed"
+          if printf '%s\n' "$changed" | grep -qvE '(\.md$|^docs/)'; then
+            echo "code=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Install uv
+        if: steps.filter.outputs.code == 'true'
         uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
@@ -35,9 +58,11 @@ jobs:
           cache-dependency-glob: '**/pyproject.toml'
 
       - name: Pin Python 3.11
+        if: steps.filter.outputs.code == 'true'
         run: uv python install 3.11
 
       - name: Ruff (lint)
+        if: steps.filter.outputs.code == 'true'
         run: uv run --python 3.11 --extra dev ruff check .
 
       # tests/sources is the hermetic unit suite: sqlite + httpx.MockTransport,
@@ -50,4 +75,9 @@ jobs:
       # setup-uv across runs. To slim this, move sentence-transformers/torch into
       # an optional `[rag]` extra so this job installs a lighter core.
       - name: Unit tests
+        if: steps.filter.outputs.code == 'true'
         run: uv run --python 3.11 --extra dev pytest tests/sources -q
+
+      - name: Doc-only change — suite skipped
+        if: steps.filter.outputs.code != 'true'
+        run: echo "Only docs changed; lint + unit tests skipped. Required check passes."
