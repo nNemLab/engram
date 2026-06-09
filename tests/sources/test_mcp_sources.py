@@ -91,6 +91,36 @@ def test_remove_deletes(conn):
     assert conn.execute("SELECT 1 FROM sources WHERE id='x'").fetchone() is None
 
 
+def test_remove_blocked_by_content_returns_helpful_error(conn):
+    """Regression for #1 (PR #8): removing a source still referenced by content
+    must surface a helpful error instead of raising sqlite3.IntegrityError, and
+    must not delete the source.
+
+    Production enables FK enforcement (engram/common/db.py: PRAGMA foreign_keys
+    = ON); the shared `conn` fixture does not, so enable it here to reproduce
+    the constraint that triggers the bug.
+    """
+    conn.execute("PRAGMA foreign_keys = ON")
+    from engram.mcp_server.tools.sources import register
+    tools = register(conn)
+    tools["sources.add"]["handler"]({
+        "id": "docs", "name": "Docs", "adapter": "sitemap", "url": "u"})
+    # content row referencing the source via content.source_id -> sources(id)
+    conn.execute(
+        "INSERT INTO content (hash, body, source_id) VALUES (?, ?, ?)",
+        ("h1", "body text", "docs"),
+    )
+    conn.commit()
+
+    out = tools["sources.remove"]["handler"]({"id": "docs"})
+
+    assert "error" in out, "FK-blocked remove should return an error, not raise"
+    assert out["id"] == "docs"
+    assert "tombstone" in out["error"] and "source_id" in out["error"]
+    # the source must survive — the delete was rejected, not silently dropped
+    assert conn.execute("SELECT 1 FROM sources WHERE id='docs'").fetchone() is not None
+
+
 def test_fetch_now_clears_next_poll_at(conn):
     """Triggering fetch_now sets next_poll_at to NULL so the daemon picks it up next tick."""
     from engram.mcp_server.tools.sources import register
