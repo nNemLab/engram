@@ -6,6 +6,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
@@ -17,12 +19,53 @@ logger = logging.getLogger("engram.poller.github_repo")
 
 _REPO_RE = re.compile(r"https?://github\.com/([^/]+)/([^/]+?)/?(?:$|\.git$)")
 
+_AUTH_SOURCE_LABEL = {
+    "env": "GITHUB_TOKEN env var",
+    "gh": "gh CLI keyring",
+    "none": "anonymous (60 req/hr)",
+}
+
 
 def _parse_repo(url: str) -> tuple[str, str]:
     m = _REPO_RE.match(url)
     if not m:
         raise ValueError(f"not a github.com/<org>/<repo> URL: {url}")
     return m.group(1), m.group(2)
+
+
+def _resolve_token() -> tuple[str | None, str]:
+    """Resolve a GitHub API token: GITHUB_TOKEN env -> gh keyring -> anonymous.
+
+    An explicit ``GITHUB_TOKEN`` wins so containers/CI can set it directly. When
+    absent (e.g. a host that keeps its token in the ``gh`` credential store
+    rather than the environment), fall back to ``gh auth token``. If neither is
+    available, return ``None`` and the adapter polls anonymously.
+
+    Returns ``(token, source)`` with ``source`` in {"env", "gh", "none"}.
+    """
+    env_token = os.environ.get("GITHUB_TOKEN")
+    if env_token:
+        return env_token, "env"
+
+    gh = shutil.which("gh")
+    if gh:
+        # Strip GH_TOKEN/GITHUB_TOKEN so gh reads its credential store (keyring)
+        # rather than echoing an env var back.
+        clean_env = {k: v for k, v in os.environ.items()
+                     if k not in ("GH_TOKEN", "GITHUB_TOKEN")}
+        try:
+            proc = subprocess.run(
+                [gh, "auth", "token"],
+                capture_output=True, text=True, timeout=5, env=clean_env,
+            )
+        except (OSError, subprocess.SubprocessError):
+            proc = None
+        if proc is not None and proc.returncode == 0:
+            tok = proc.stdout.strip()
+            if tok:
+                return tok, "gh"
+
+    return None, "none"
 
 
 class GitHubRepoAdapter:
@@ -36,17 +79,29 @@ class GitHubRepoAdapter:
         _transport: httpx.AsyncBaseTransport | None = None,
         user_agent: str = "engram/0.1 (+source-poller)",
     ) -> None:
-        token = os.environ.get("GITHUB_TOKEN")
-        headers: dict[str, str] = {"user-agent": user_agent,
-                                    "accept": "application/vnd.github+json"}
-        if token:
-            headers["authorization"] = f"Bearer {token}"
-        kwargs: dict = dict(base_url=self._API_BASE, headers=headers, timeout=30.0)
-        if _transport is not None:
-            kwargs["transport"] = _transport
-        self._client = httpx.AsyncClient(**kwargs)
+        # Resolve the token lazily on first fetch: this adapter is instantiated
+        # at import time (self-registration), and token resolution may shell out
+        # to `gh`, which must not run during import/test collection.
+        self._transport = _transport
+        self._user_agent = user_agent
+        self._client: httpx.AsyncClient | None = None
+
+    def _ensure_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            token, source = _resolve_token()
+            logger.info("github-repo auth: %s", _AUTH_SOURCE_LABEL[source])
+            headers: dict[str, str] = {"user-agent": self._user_agent,
+                                        "accept": "application/vnd.github+json"}
+            if token:
+                headers["authorization"] = f"Bearer {token}"
+            kwargs: dict = dict(base_url=self._API_BASE, headers=headers, timeout=30.0)
+            if self._transport is not None:
+                kwargs["transport"] = self._transport
+            self._client = httpx.AsyncClient(**kwargs)
+        return self._client
 
     async def fetch(self, source: dict) -> AsyncIterator[Candidate]:
+        self._ensure_client()
         cfg = json.loads(source.get("config") or "{}")
         include = cfg.get("include", [])
         exclude = cfg.get("exclude", [])

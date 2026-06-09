@@ -110,7 +110,7 @@ Add a handler by registering it in `handlers.HANDLERS`.
 Polled, declarative source subscriptions. `sources.add` registers a feed; the `engram-poller` daemon picks it up on its 60 s tick, dispatches the named adapter, and pushes each candidate through the dedup gate. Four adapters in v0.3:
 
 - **`sitemap`** — walks `sitemap.xml` (incl. sitemap-index files), filters URLs through include/exclude globs, fetches with ETag + Last-Modified conditional GETs, extracts via trafilatura.
-- **`github-repo`** — branch HEAD lookup; first run walks the tree, subsequent runs use the GitHub `compare` API for incremental updates. Honors `$GITHUB_TOKEN` if present.
+- **`github-repo`** — branch HEAD lookup; first run walks the tree, subsequent runs use the GitHub `compare` API for incremental updates. Authenticates via `$GITHUB_TOKEN`, falling back to the `gh` CLI credential store (`gh auth token`), then to anonymous requests (60 req/hr) if neither is available.
 - **`mediawiki-api`** — talks directly to a wiki's `/api.php` (Fandom, Wikipedia, PCGamingWiki, ED-Codex, anything MediaWiki). Discovers pages via `list=allpages` on first run; tracks updates via `list=recentchanges` on subsequent runs. Always sends `maxlag=5` and `assert=anon`. Bypasses Cloudflare HTML gating since the API endpoint isn't gated the same way.
 - **`urls`** — manually curated list of URLs for sites with no sitemap and no API (Wikipedia single articles, Inara reference pages, dashboards). Same conditional-GET caching as sitemap.
 

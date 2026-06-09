@@ -70,7 +70,7 @@ changes (`superseded` outcome).
 | Adapter | `url` | Default schedule | Required `config` keys |
 |---|---|---|---|
 | `sitemap` | `<...>/sitemap.xml` | `7d` | optional `include[]`, `exclude[]` (URL globs) |
-| `github-repo` | `https://github.com/<org>/<repo>` | `1d` | optional `branch` (default `main`), `include[]`, `exclude[]` (path globs); honors `$GITHUB_TOKEN` |
+| `github-repo` | `https://github.com/<org>/<repo>` | `1d` | optional `branch` (default `main`), `include[]`, `exclude[]` (path globs); auth: `$GITHUB_TOKEN` → `gh auth token` (keyring) → anonymous |
 | `mediawiki-api` | wiki root (e.g. `https://elite-dangerous.fandom.com`) | `7d` | optional `namespaces[]` (default `[0]`), `include[]`/`exclude[]` (title globs), `max_pages_first_run` (default 1000) |
 | `urls` | `""` (ignored) | `7d` | required `urls[]` |
 
