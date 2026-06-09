@@ -11,7 +11,6 @@ import yaml
 
 from .paths import expand
 
-
 DEFAULT_CONFIG_PATH = Path("~/.engram/config.yml")
 
 

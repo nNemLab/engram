@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from xml.etree import ElementTree as ET
 
 import httpx
@@ -78,7 +78,7 @@ class SitemapAdapter:
                 source_url=u,
                 body=extracted,
                 title=title_str,
-                fetched_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                fetched_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 metadata={"etag": result.etag, "content_type": result.content_type},
             )
             new_cache[u] = HTTPCacheEntry(etag=result.etag, last_modified=result.last_modified)
@@ -89,7 +89,7 @@ class SitemapAdapter:
                 url: {"etag": entry.etag, "last_modified": entry.last_modified}
                 for url, entry in new_cache.items()
             },
-            "last_seen_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "last_seen_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         })
 
     async def _collect_urls(self, sitemap_url: str, _depth: int = 0) -> list[str]:

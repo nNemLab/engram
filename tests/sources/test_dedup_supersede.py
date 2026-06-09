@@ -24,8 +24,9 @@ def conn(tmp_path, monkeypatch):
     c.execute("PRAGMA foreign_keys = ON")
     _apply_schema(c)
     # Stub config so dedup.gate doesn't try to load ~/.engram/config.yml
-    from engram.common import config as cfg_mod
     from types import SimpleNamespace
+
+    from engram.common import config as cfg_mod
     fake = SimpleNamespace(rag=SimpleNamespace(near_dup_threshold=0.92))
     monkeypatch.setattr(cfg_mod, "load_config", lambda: fake)
     yield c

@@ -18,7 +18,6 @@ import nbformat as nbf
 
 from engram.common.config import load_config
 
-
 KERNEL = {
     "kernelspec": {"display_name": "Engram", "language": "python", "name": "engram"},
     "language_info": {"name": "python"},

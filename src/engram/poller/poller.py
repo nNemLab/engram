@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .. import log as event_log
@@ -21,7 +21,7 @@ CIRCUIT_BREAK_THRESHOLD = 5
 
 
 def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def select_due(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -94,7 +94,7 @@ async def poll_one(conn: sqlite3.Connection, source: dict[str, Any]) -> dict[str
         )
 
     interval = parse_interval(source["schedule"])
-    next_at = (datetime.now(timezone.utc) + interval).strftime("%Y-%m-%dT%H:%M:%SZ")
+    next_at = (datetime.now(UTC) + interval).strftime("%Y-%m-%dT%H:%M:%SZ")
     new_error_count = (source["error_count"] or 0) + 1 if error_msg else 0
     paused = 1 if new_error_count >= CIRCUIT_BREAK_THRESHOLD else (source["paused"] or 0)
     conn.execute(

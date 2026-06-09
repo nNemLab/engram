@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import fnmatch
 import re
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Protocol
-
+from typing import Protocol
 
 # ----- Candidate ---------------------------------------------------------
 
@@ -69,7 +69,7 @@ def register(adapter: Adapter) -> None:
 
 # Eager-import adapters so they self-register into ADAPTERS on package import.
 # Placed at module bottom so register() is defined before adapter modules call it.
-from . import sitemap as _sitemap  # noqa: E402, F401
 from . import github_repo as _github_repo  # noqa: E402, F401
 from . import mediawiki_api as _mediawiki_api  # noqa: E402, F401
+from . import sitemap as _sitemap  # noqa: E402, F401
 from . import urls as _urls  # noqa: E402, F401

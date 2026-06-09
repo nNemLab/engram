@@ -3,12 +3,11 @@ from __future__ import annotations
 
 import struct
 import threading
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 
 from ..common.config import load_config
-
 
 _lock = threading.Lock()
 _model = None

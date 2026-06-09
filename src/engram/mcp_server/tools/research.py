@@ -9,7 +9,7 @@ Tools:
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ... import dedup
@@ -17,7 +17,7 @@ from ...common.config import load_config
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:

@@ -15,8 +15,8 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Literal
 
-from .common.config import load_config
 from . import log as event_log
+from .common.config import load_config
 
 Outcome = Literal["new", "exact_dup", "near_dup", "contradicts", "superseded"]
 

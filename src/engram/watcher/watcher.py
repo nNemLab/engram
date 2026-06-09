@@ -15,17 +15,16 @@ import logging
 import sqlite3
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
-from watchdog.events import FileSystemEventHandler, FileModifiedEvent, FileCreatedEvent
+from watchdog.events import FileCreatedEvent, FileModifiedEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
+from .. import log as event_log
 from ..common.config import load_config
 from ..common.db import get_connection
-from .. import log as event_log
 from .differ import unified_diff
-
 
 logger = logging.getLogger("engram.watcher")
 
@@ -101,7 +100,7 @@ def _on_change(conn: sqlite3.Connection, rel: str, abs_path: str) -> None:
         return  # no real change (touch / Obsidian metadata write)
     diff = unified_diff(row["rendered_body"], new_body, rel)
     h = row["content_hash"]
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     conn.execute("UPDATE content SET body = ?, updated_at = ? WHERE hash = ?", (new_body, now, h))
     conn.execute(
         "UPDATE vault_state SET rendered_body = ?, rendered_at = ? WHERE vault_path = ?",

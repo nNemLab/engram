@@ -7,10 +7,9 @@ result set of 10–30 candidates this is cheap (<200ms on CPU, <30ms on GPU).
 from __future__ import annotations
 
 import threading
-from typing import Sequence
+from collections.abc import Sequence
 
 from ..common.config import load_config
-
 
 _lock = threading.Lock()
 _model = None
