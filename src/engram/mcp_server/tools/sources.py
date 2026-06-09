@@ -74,9 +74,15 @@ def register(conn: sqlite3.Connection) -> dict[str, dict]:
         return d
 
     def remove(args: dict[str, Any]) -> dict[str, Any]:
-        cur = conn.execute("DELETE FROM sources WHERE id = ?", (args["id"],))
-        conn.commit()
-        return {"removed": cur.rowcount > 0}
+        try:
+            cur = conn.execute("DELETE FROM sources WHERE id = ?", (args["id"],))
+            conn.commit()
+            return {"removed": cur.rowcount > 0}
+        except sqlite3.IntegrityError:
+            return {
+                "error": "source has content; tombstone content first or set source_id to NULL",
+                "id": args["id"]
+            }
 
     def fetch_now(args: dict[str, Any]) -> dict[str, Any]:
         cur = conn.execute(
