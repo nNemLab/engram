@@ -9,6 +9,11 @@ on:
   push:
     branches: [main]
 
+# setup-uv@v6 still bundles a Node 20 entrypoint; opt JS actions into Node 24
+# now (GitHub force-migrates on 2026-06-16 regardless). Clears the deprecation.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 # Cancel superseded runs on the same ref (e.g. force-pushes to a PR branch).
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
