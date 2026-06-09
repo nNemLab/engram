@@ -5,6 +5,6 @@ After=network.target
 [Service]
 Type=oneshot
 EnvironmentFile=-%h/.engram/.env
-ExecStart=/data/projects/agenticOS/engram/bin/aos-digest 24
+ExecStart=/data/projects/engram/bin/eos-digest 24
 StandardOutput=journal
 StandardError=journal

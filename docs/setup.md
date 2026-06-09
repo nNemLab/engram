@@ -2,34 +2,39 @@
 
 ## Prerequisites
 
+- [uv](https://docs.astral.sh/uv/) — builds the venv and installs engram
 - Python 3.11+
 - Obsidian (for the human surface)
-- Optional: `papermill` for Jupyter playbooks; `marimo` for curated playbooks
-  (both already in `pyproject.toml` deps)
+- `papermill` (Jupyter playbooks) and `marimo` (curated playbooks) install
+  automatically — both are in `pyproject.toml` deps
 
 ## Steps
 
-### 1. Install
+### 1. Get the code
 
 ```bash
-cd /data/projects/agenticOS/engram
-pip install -e .              # or: uv pip install -e .
+cd /data/projects/engram
 ```
 
-This pulls in `mcp`, `sqlite-vec`, `sentence-transformers`, `watchdog`,
-`papermill`, `marimo`, and creates the `engram-*` console scripts.
+Engram installs itself into a dedicated venv during init (next step) — there is
+no separate `pip install`. You only need `uv` and Python 3.11+ on the host.
 
 ### 2. Initialize
 
 ```bash
-./bin/aos-init
+./bin/eos-init
 ```
 
-Creates:
+Builds the runtime venv, installs engram into it (pulling in `mcp`, `sqlite-vec`,
+`sentence-transformers`, `watchdog`, `papermill`, `marimo`, …), and creates:
+- `~/.engram/.venv/` — runtime venv; every daemon and the MCP server run from here
 - `~/.engram/config.yml` — copy of `config.example.yml`, edit paths if needed
 - `~/.engram/.env` — copy of `.env.example`, fill in API keys
 - `~/.engram/vault/` — Obsidian vault scaffolded from `vault-template/`
 - `~/.engram/db.sqlite` — schema applied, `vec0` table created
+
+(Override the venv location with `ENGRAM_VENV`; the daemon wrappers and
+`eos-*` scripts honor the same variable.)
 
 ### 3. Open the vault in Obsidian
 
@@ -55,18 +60,20 @@ Four long-running processes. Pick one:
 
 **Quick start (four shells):**
 ```bash
-engram-projector   # log -> vault markdown
-engram-watcher     # vault edits -> log
-engram-reactor     # embed, staleness, near-dup post-check
-engram-poller      # poll registered sources on schedule
+./bin/eos-projector                 # log -> vault markdown
+./bin/eos-watcher                   # vault edits -> log
+./bin/eos-reactor                   # embed, staleness, near-dup post-check
+~/.engram/.venv/bin/engram-poller   # poll registered sources on schedule
 ```
 
 **Production (systemd user units):**
-Copy `systemd/engram-{projector,watcher,reactor,poller}.service` into
-`~/.config/systemd/user/`, then:
+Copy `systemd/engram-{projector,watcher,reactor,poller}.service` and
+`systemd/engram-daily-digest.{service,timer}` into `~/.config/systemd/user/`,
+then:
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now engram-projector engram-watcher engram-reactor engram-poller
+systemctl --user enable --now \
+  engram-projector engram-watcher engram-reactor engram-poller engram-daily-digest.timer
 ```
 
 ### 6. Verify
@@ -113,19 +120,20 @@ Try the round trip:
 ```bash
 # In a Claude Code session, ask the agent to call kb.write with some content.
 # Then:
-./bin/aos-status         # event count should be 1+
+./bin/eos-status         # event count should be 1+
 ls ~/.engram/vault/050-kb/    # the projector should have rendered a file
-./bin/aos-query "your query"   # RAG should return the new content
+./bin/eos-query "your query"   # RAG should return the new content
 ```
 
 ## Troubleshooting
 
-- **`engram-mcp` not found** — `pip install -e .` from the project root.
+- **`engram-mcp` not found** — re-run `./bin/eos-init` to (re)build
+  `~/.engram/.venv`; the MCP binary is `~/.engram/.venv/bin/engram-mcp`.
 - **`sqlite-vec` extension load failure** — older SQLite. The `sqlite-vec`
   package ships its own loadable extension; if it still fails, check
-  `python -c "import sqlite3; print(sqlite3.sqlite_version)"` ≥ 3.41.
+  `~/.engram/.venv/bin/python -c "import sqlite3; print(sqlite3.sqlite_version)"` ≥ 3.41.
 - **Embeddings download is slow** — first run downloads `all-MiniLM-L6-v2`
   (~80MB) to `~/.cache/huggingface/`. Pre-warm with
-  `python -c "from engram.rag.embed import embed_one; embed_one('warm')"`.
+  `~/.engram/.venv/bin/python -c "from engram.rag.embed import embed_one; embed_one('warm')"`.
 - **Vault projector not writing** — check `~/.engram/db.sqlite` exists,
   check `daemon_cursors` is being updated, check the projector's stderr.

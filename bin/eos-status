@@ -2,7 +2,7 @@
 # Quick health snapshot. Reads counts from the DB and reports daemon cursors.
 set -euo pipefail
 
-python - <<'PY'
+"${ENGRAM_VENV:-$HOME/.engram/.venv}/bin/python" - <<'PY'
 from engram.common.db import connect
 
 with connect() as c:
