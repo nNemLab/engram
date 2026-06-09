@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-exec engram-reactor "$@"
+exec "${ENGRAM_VENV:-$HOME/.engram/.venv}/bin/engram-reactor" "$@"
