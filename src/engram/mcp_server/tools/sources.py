@@ -105,8 +105,14 @@ def register(conn: sqlite3.Connection) -> dict[str, dict]:
             params.append(args["schedule"])
             updated.append("schedule")
         if "config" in args:
+            # Merge provided config into existing config rather than replacing it
+            cur = conn.execute(
+                "SELECT config FROM sources WHERE id = ?", (args["id"],)
+            ).fetchone()
+            existing_cfg = json.loads(cur[0]) if cur[0] else {}
+            merged_cfg = {**existing_cfg, **args["config"]}
             fields.append("config = ?")
-            params.append(json.dumps(args["config"]))
+            params.append(json.dumps(merged_cfg))
             updated.append("config")
         if "source_tier" in args:
             fields.append("source_tier = ?")

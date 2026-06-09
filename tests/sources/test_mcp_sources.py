@@ -82,6 +82,24 @@ def test_set_updates_fields(conn):
     assert row["schedule"] == "1d"
 
 
+def test_set_merges_config_instead_of_replacing(conn):
+    """Regression for #2 (PR #20): sources.set merges the provided config into the
+    existing config (shallow) rather than overwriting the whole blob — updated keys
+    win, untouched keys survive, new keys are added.
+    """
+    from engram.mcp_server.tools.sources import register
+    tools = register(conn)
+    tools["sources.add"]["handler"]({
+        "id": "x", "name": "x", "adapter": "sitemap", "url": "u",
+        "config": {"include": ["*/a/*"], "depth": 2},
+    })
+    out = tools["sources.set"]["handler"]({"id": "x", "config": {"depth": 5, "exclude": ["*/b/*"]}})
+    assert "config" in out["updated_fields"]
+    row = conn.execute("SELECT config FROM sources WHERE id='x'").fetchone()
+    # 'include' preserved (would be dropped by a replace), 'depth' updated, 'exclude' added
+    assert json.loads(row["config"]) == {"include": ["*/a/*"], "depth": 5, "exclude": ["*/b/*"]}
+
+
 def test_remove_deletes(conn):
     from engram.mcp_server.tools.sources import register
     tools = register(conn)
