@@ -39,8 +39,9 @@ def _subprocess_env(root: Path) -> dict[str, str]:
             pass
     return merged
 
-from ...common.config import load_config
-from ... import log as event_log
+# Imported below the module helpers above; keep here to avoid an import cycle.
+from ...common.config import load_config  # noqa: E402
+from ... import log as event_log  # noqa: E402
 
 
 def _now_slug() -> str:

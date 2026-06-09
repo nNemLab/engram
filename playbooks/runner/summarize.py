@@ -29,7 +29,7 @@ def summarize(run_dir: Path) -> str:
         try:
             data = json.loads(nb.read_text())
             cell_count = len(data.get("cells", []))
-            parts += [f"## Notebook", "", f"- Cells: {cell_count}", f"- Path: `{nb}`", ""]
+            parts += ["## Notebook", "", f"- Cells: {cell_count}", f"- Path: `{nb}`", ""]
         except Exception:
             pass
 

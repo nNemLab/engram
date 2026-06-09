@@ -1,5 +1,4 @@
 """fetch_with_politeness: Retry-After handling, conditional headers, rate-limiting."""
-import asyncio
 from unittest.mock import patch
 
 import httpx

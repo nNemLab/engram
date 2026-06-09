@@ -1,6 +1,5 @@
 """End-to-end: serve a fixture sitemap from a local httpd, run the poller,
 modify content, run again, assert the supersede flow worked top to bottom."""
-import asyncio
 import http.server
 import json
 import socketserver
