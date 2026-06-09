@@ -89,10 +89,37 @@ Engram is **online to gather, offline to use.**
 
 ## Architecture
 
-The architecture diagram is an embeddable, browser-rendered React component —
-[`docs/architecture.jsx`](docs/architecture.jsx) — drop it into any React / MDX
-docs site (`import EngramArchitecture from "./architecture.jsx"`). A text
-rendering of the same data flow lives in [docs/architecture.md](docs/architecture.md).
+```mermaid
+flowchart TD
+    K["Claude Code · kernel"]
+    L[("Event Log — SQLite, append-only<br/>ingested · merged · superseded · retrieved · edit · source_polled")]
+    P["Projector<br/>log → vault"]
+    R["RAG view<br/>vec0 + FTS5"]
+    Rx["Reactor<br/>embed · staleness"]
+    O["Obsidian<br/>human edits"]
+    W["Watcher<br/>edits → log"]
+    Po["Poller<br/>due sources"]
+    A["Adapters<br/>sitemap · github-repo · mediawiki · urls"]
+
+    K <-->|MCP stdio| L
+    L --> P --> O
+    O -->|edits| W -->|edits → log| L
+    L --> R
+    L --> Rx -->|embed / merge| L
+    L --> Po --> A -->|candidates → gate| L
+
+    classDef kernel fill:#eef2ff,stroke:#6366f1,color:#0f172a;
+    classDef log fill:#e0f2fe,stroke:#0ea5e9,color:#0f172a;
+    classDef view fill:#ccfbf1,stroke:#14b8a6,color:#0f172a;
+    classDef human fill:#fef3c7,stroke:#f59e0b,color:#0f172a;
+    classDef source fill:#f3e8ff,stroke:#a855f7,color:#0f172a;
+
+    class K kernel
+    class L log
+    class P,R,Rx view
+    class O,W human
+    class Po,A source
+```
 
 Every content write goes through `dedup.gate()` and produces an `ingested`
 event. The reactor embeds and post-checks for near-dups. The projector renders
