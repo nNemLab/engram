@@ -20,17 +20,18 @@ def conn(tmp_path, monkeypatch):
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA foreign_keys = ON")
     _apply(c)
-    from engram.common import config as cfg_mod
     from types import SimpleNamespace
+
+    from engram.common import config as cfg_mod
     fake = SimpleNamespace(rag=SimpleNamespace(near_dup_threshold=0.92))
     monkeypatch.setattr(cfg_mod, "load_config", lambda: fake)
     yield c
 
 
 def test_handle_superseded_overwrites_vault_path(conn, tmp_path):
+    from engram import log as event_log
     from engram.dedup import gate
     from engram.projector.projector import _handle_event
-    from engram import log as event_log
 
     vault = tmp_path / "vault"
     vault.mkdir()

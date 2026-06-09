@@ -4,7 +4,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-
 _HEADING = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 # Approx: ~4 chars per token. Cheap heuristic, no tokenizer dep.
 _CHARS_PER_TOKEN = 4

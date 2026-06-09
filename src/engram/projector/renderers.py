@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Callable
+from collections.abc import Callable
 from urllib.parse import urlparse
 
 import yaml

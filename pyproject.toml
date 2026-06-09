@@ -49,6 +49,13 @@ packages = ["src/engram"]
 line-length = 110
 target-version = "py311"
 
+[tool.ruff.lint]
+# Defaults are E/F only; add import-sorting (I), pycodestyle warnings (W), and
+# pyupgrade (UP). E501/line-length and `ruff format` are deferred to a dedicated
+# formatting PR (would reformat ~58 files); ignore E501 until then.
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

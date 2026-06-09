@@ -43,7 +43,7 @@ def httpd(tmp_path):
                 self.send_response(404)
                 self.end_headers()
                 return
-            from urllib.parse import urlparse, parse_qs
+            from urllib.parse import parse_qs, urlparse
             qs = parse_qs(urlparse(self.path).query)
             action = qs.get("action", [""])[0]
             list_ = qs.get("list", [""])[0]
@@ -82,8 +82,9 @@ async def test_mediawiki_full_supersede_flow(tmp_path, monkeypatch, httpd):
     conn.execute("PRAGMA foreign_keys = ON")
     _apply(conn)
 
-    from engram.common import config as cfg_mod
     from types import SimpleNamespace
+
+    from engram.common import config as cfg_mod
     fake = SimpleNamespace(rag=SimpleNamespace(near_dup_threshold=0.92))
     monkeypatch.setattr(cfg_mod, "load_config", lambda: fake)
 

@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC
 
+from .. import log as event_log
 from ..common.config import load_config
 from .embed import embed_one
-from .. import log as event_log
 
 
 @dataclass
@@ -50,12 +51,12 @@ def _rrf_fuse(rankings: list[list[tuple[str, float]]], k: int, rrf_k: int) -> li
 def _confidence_decay(fetched_at: str | None, half_life_days: int) -> float:
     if not fetched_at:
         return 1.0
-    from datetime import datetime, timezone
+    from datetime import datetime
     try:
         ts = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
     except ValueError:
         return 1.0
-    age_days = max(0.0, (datetime.now(timezone.utc) - ts).total_seconds() / 86400.0)
+    age_days = max(0.0, (datetime.now(UTC) - ts).total_seconds() / 86400.0)
     return 0.5 ** (age_days / max(1, half_life_days))
 
 

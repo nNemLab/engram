@@ -5,10 +5,9 @@ import logging
 import sqlite3
 import time
 
-from ..common.db import get_connection
 from .. import log as event_log
+from ..common.db import get_connection
 from .handlers import HANDLERS
-
 
 logger = logging.getLogger("engram.reactor")
 CURSOR_KEY = "reactor"

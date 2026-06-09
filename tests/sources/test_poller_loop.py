@@ -2,7 +2,7 @@
 update source state."""
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -22,8 +22,9 @@ def conn(tmp_path, monkeypatch):
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA foreign_keys = ON")
     _apply(c)
-    from engram.common import config as cfg_mod
     from types import SimpleNamespace
+
+    from engram.common import config as cfg_mod
     fake = SimpleNamespace(rag=SimpleNamespace(near_dup_threshold=0.92))
     monkeypatch.setattr(cfg_mod, "load_config", lambda: fake)
     yield c
@@ -44,8 +45,8 @@ class FakeAdapter:
 
 @pytest.mark.asyncio
 async def test_poll_one_runs_due_source_and_advances_state(conn, monkeypatch):
+    from engram.poller.adapters import ADAPTERS, Candidate
     from engram.poller.poller import poll_one
-    from engram.poller.adapters import Candidate, ADAPTERS
 
     fake = FakeAdapter([
         Candidate(source_url="https://x/a", body="A body", title="A"),
@@ -74,7 +75,7 @@ async def test_poll_one_runs_due_source_and_advances_state(conn, monkeypatch):
 @pytest.mark.asyncio
 async def test_due_query_skips_paused_and_future(conn):
     from engram.poller.poller import select_due
-    future = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    future = (datetime.now(UTC) + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     conn.execute(
         "INSERT INTO sources (id, name, adapter, url, schedule, paused, next_poll_at) "
         "VALUES ('past', 'p', 'fake', 'x', '1d', 0, NULL),"

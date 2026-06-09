@@ -16,11 +16,12 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
+from engram import dedup
+from engram import log as event_log
 from engram.common.config import load_config
 from engram.common.db import get_connection
-from engram import dedup, log as event_log
 from engram.watcher.differ import unified_diff
 
 
@@ -68,7 +69,7 @@ def main() -> int:
         logging.info("edited: %s (hash=%s)", rel, row["content_hash"])
         edited += 1
         if not args.dry_run:
-            now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
             diff = unified_diff(row["rendered_body"], body, rel)
             conn.execute(
                 "UPDATE content SET body = ?, updated_at = ? WHERE hash = ?",

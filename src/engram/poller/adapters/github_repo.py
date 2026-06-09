@@ -6,8 +6,8 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timezone
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 
 import httpx
 
@@ -77,7 +77,7 @@ class GitHubRepoAdapter:
                 source_url=url,
                 body=body,
                 title=path.rsplit("/", 1)[-1],
-                fetched_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                fetched_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 metadata={"sha": head_sha, "path": path},
             )
 

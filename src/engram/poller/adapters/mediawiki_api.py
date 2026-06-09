@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
-from typing import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Iterable
+from datetime import UTC, datetime
 from urllib.parse import quote
 
 import httpx
@@ -48,7 +48,7 @@ class MediaWikiApiAdapter:
         cursor = json.loads(source.get("cursor") or "{}")
         last_rc_at = cursor.get("last_rc_at")
 
-        new_rc_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        new_rc_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # Discover titles
         titles: list[str] = []
@@ -82,7 +82,7 @@ class MediaWikiApiAdapter:
                 source_url=f"{wiki_root}/wiki/{url_title}",
                 body=extracted,
                 title=title,
-                fetched_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                fetched_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 metadata={"page_id": None},
             )
 

@@ -8,14 +8,13 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
+from .. import log as event_log
 from ..common.config import load_config
 from ..common.db import get_connection
-from .. import log as event_log
 from .renderers import RENDERERS
-
 
 logger = logging.getLogger("engram.projector")
 
@@ -52,7 +51,7 @@ def _project_one(conn: sqlite3.Connection, vault: Path, content_hash: str, kind_
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     abs_path.write_text(body)
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     conn.execute(
         "INSERT INTO vault_state (vault_path, content_hash, rendered_body, rendered_at) "
         "VALUES (?, ?, ?, ?) "
@@ -102,7 +101,7 @@ def _handle_event(conn: sqlite3.Connection, vault: Path, evt: event_log.Event,
                 abs_path = vault / old_path
                 abs_path.parent.mkdir(parents=True, exist_ok=True)
                 abs_path.write_text(body)
-                now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
                 conn.execute("DELETE FROM vault_state WHERE content_hash = ?", (hash_old,))
                 conn.execute(
                     "INSERT INTO vault_state (vault_path, content_hash, rendered_body, rendered_at) "

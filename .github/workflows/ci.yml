@@ -53,9 +53,8 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-          # No uv.lock is committed; key the cache on pyproject.toml so it
-          # invalidates when deps change instead of "never invalidating".
-          cache-dependency-glob: '**/pyproject.toml'
+          # uv.lock is committed; key the cache on it so it invalidates on dep changes.
+          cache-dependency-glob: '**/uv.lock'
 
       - name: Pin Python 3.11
         if: steps.filter.outputs.code == 'true'
@@ -63,7 +62,7 @@ jobs:
 
       - name: Ruff (lint)
         if: steps.filter.outputs.code == 'true'
-        run: uv run --python 3.11 --extra dev ruff check .
+        run: uv run --locked --python 3.11 --extra dev ruff check .
 
       # tests/sources is the hermetic unit suite: sqlite + httpx.MockTransport,
       # no network, no embedding model, no LLM — safe on hosted runners.
@@ -76,7 +75,7 @@ jobs:
       # an optional `[rag]` extra so this job installs a lighter core.
       - name: Unit tests
         if: steps.filter.outputs.code == 'true'
-        run: uv run --python 3.11 --extra dev pytest tests/sources -q
+        run: uv run --locked --python 3.11 --extra dev pytest tests/sources -q
 
       - name: Doc-only change — suite skipped
         if: steps.filter.outputs.code != 'true'

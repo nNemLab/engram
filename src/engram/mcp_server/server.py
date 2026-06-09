@@ -19,7 +19,6 @@ from mcp.types import TextContent, Tool
 from ..common.db import get_connection
 from . import tools as toolmod
 
-
 logger = logging.getLogger("engram.mcp")
 
 

@@ -8,7 +8,7 @@ import sqlite3
 import subprocess
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -40,12 +40,12 @@ def _subprocess_env(root: Path) -> dict[str, str]:
     return merged
 
 # Imported below the module helpers above; keep here to avoid an import cycle.
-from ...common.config import load_config  # noqa: E402
 from ... import log as event_log  # noqa: E402
+from ...common.config import load_config  # noqa: E402
 
 
 def _now_slug() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+    return datetime.now(UTC).strftime("%Y-%m-%d_%H%M%S")
 
 
 def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
