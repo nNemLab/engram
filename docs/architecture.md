@@ -44,6 +44,9 @@ Two corollaries shape the whole design:
                                         └──────────────┘
 ```
 
+> A browser-rendered, embeddable version of this diagram ships as a React
+> component: [`architecture.jsx`](architecture.jsx).
+
 Every content write goes through `dedup.gate()` and produces an `ingested`
 event. The reactor embeds and post-checks for near-dups. The projector renders
 content rows to the vault. The watcher tails the vault filesystem so manual
@@ -225,3 +228,44 @@ ranker uses this so ranking stays correct without manual tuning.
 | FTS5 / embeddings corrupted | Drop the tables; replay log from 0 (handlers re-embed and re-index). |
 | Watcher crashed during human edit | Edit becomes authoritative on watcher restart; no event recorded. Live with it, or replay vault → log via `scripts/reconcile_vault.py`. |
 | Wrong merge | Manually clear `tombstoned`, emit a corrective event. The log preserves the bad merge for audit. |
+
+## Repository layout
+
+```
+engram/
+├── schema/                       # 001_initial.sql + 002_sources_and_revisions.sql
+├── src/engram/
+│   ├── common/                   # config, db connection, migration runner, paths
+│   ├── log.py                    # event log read/write
+│   ├── dedup.py                  # the gate: SHA-256 + cosine + supersede
+│   ├── rag/                      # chunk, embed, hybrid query
+│   ├── research/                 # SearXNG, cross-encoder, arXiv
+│   ├── poller/adapters/          # sitemap, github-repo, mediawiki-api, urls
+│   ├── mcp_server/tools/         # kb / rag / research / playbook / goals / sources
+│   ├── projector/                # log → vault markdown daemon
+│   ├── watcher/                  # vault edits → log events
+│   ├── reactor/                  # event-triggered handlers
+│   └── cli/                      # eos-source CLI
+├── playbooks/{scratch,curated}/  # Jupyter (default) / Marimo (curated)
+├── research/searxng/             # SearXNG docker-compose + config
+├── systemd/                      # user unit files for the four daemons + digest timer
+├── vault-template/               # initial Obsidian vault layout
+├── bin/                          # eos, eos-init, eos-mcp, eos-source, eos-status, ...
+├── tests/                        # unit (sources/) + integration/
+├── docs/                         # architecture, configuration, schema, MCP tools, setup, specs/
+├── design/                       # original design artifacts (frozen)
+└── scripts/                      # reconcile_vault, seed_starter_playbooks
+```
+
+## Versioning
+
+While in the `v0.x.y-alpha` series, the event-log schema, the on-disk layout
+under `~/.engram/`, and MCP tool signatures may all change with no
+backward-compatibility guarantees between alpha releases. Migrations are
+version-gated via `schema_version`; `init_schema()` applies any `schema/NNN_*.sql`
+past the highest applied version on every connect.
+
+Once the alpha series ends, Engram follows [SemVer 2.0.0](https://semver.org/):
+breaking schema or MCP changes bump the major; new tools or event types bump the
+minor; bug fixes bump the patch. Releases live as git tags on `main`. Design
+specs and implementation plans: [superpowers/](superpowers/).

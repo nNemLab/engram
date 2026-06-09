@@ -89,27 +89,10 @@ Engram is **online to gather, offline to use.**
 
 ## Architecture
 
-```
-        ┌─────────────────────────────────────┐
-        │         Claude Code (kernel)        │
-        └──────────────────┬──────────────────┘
-                           │ MCP stdio (one server, namespaced tools)
-                           ▼
-        ┌─────────────────────────────────────┐
-        │  Event Log (SQLite, append-only)    │
-        └──┬───────┬───────┬───────┬──────────┘
-           │       │       │       │
-           ▼       ▼       ▼       ▼
-       Vault   RAG view  Reactor  Poller
-       projector (vec+FTS) (handlers) (sources)
-           │                │       │
-           ▼                ▼       ▼
-       ┌─────────┐     ┌─────────────┐  ┌──────────────┐
-       │ Obsidian│────►│ Watcher     │  │ Adapters:    │
-       │ (human) │     │ (edits→log) │  │ sitemap,     │
-       └─────────┘     └─────────────┘  │ github-repo  │
-                                        └──────────────┘
-```
+The architecture diagram is an embeddable, browser-rendered React component —
+[`docs/architecture.jsx`](docs/architecture.jsx) — drop it into any React / MDX
+docs site (`import EngramArchitecture from "./architecture.jsx"`). A text
+rendering of the same data flow lives in [docs/architecture.md](docs/architecture.md).
 
 Every content write goes through `dedup.gate()` and produces an `ingested`
 event. The reactor embeds and post-checks for near-dups. The projector renders
@@ -159,58 +142,10 @@ Full setup, troubleshooting, and round-trip verification: [docs/setup.md](docs/s
 
 ## Configuration
 
-Single source: `~/.engram/config.yml` (override path with `$ENGRAM_CONFIG`).
-Template: [`config.example.yml`](config.example.yml). Secrets live in
-`~/.engram/.env`; template: [`.env.example`](.env.example).
-
-The five things you may want to change:
-
-- `paths.root` — where everything lives. Default `~/.engram`.
-- `rag.embed_model` — swap for a smaller ONNX runtime for a lighter install. Contract: `encode(texts, normalize_embeddings=True) -> np.ndarray[float32]`.
-- `confidence.source_tier_weights` — how much you trust each source class.
-- `research.searxng_url` — point at your SearXNG instance.
-- `playbooks.default_runtime` — `jupyter` or `marimo`.
-
-## Repository layout
-
-```
-engram/
-├── schema/                       # 001_initial.sql + 002_sources_and_revisions.sql
-├── src/engram/
-│   ├── common/                   # config, db connection, migration runner, paths
-│   ├── log.py                    # event log read/write
-│   ├── dedup.py                  # the gate: SHA-256 + cosine + supersede
-│   ├── rag/                      # chunk, embed, hybrid query
-│   ├── research/                 # SearXNG, cross-encoder, arXiv
-│   ├── poller/adapters/          # sitemap, github-repo, mediawiki-api, urls
-│   ├── mcp_server/tools/         # kb / rag / research / playbook / goals / sources
-│   ├── projector/                # log → vault markdown daemon
-│   ├── watcher/                  # vault edits → log events
-│   ├── reactor/                  # event-triggered handlers
-│   └── cli/                      # eos-source CLI
-├── playbooks/{scratch,curated}/  # Jupyter (default) / Marimo (curated)
-├── research/searxng/             # SearXNG docker-compose + config
-├── systemd/                      # user unit files for the four daemons + digest timer
-├── vault-template/               # initial Obsidian vault layout
-├── bin/                          # eos, eos-init, eos-mcp, eos-source, eos-status, ...
-├── tests/                        # unit (sources/) + integration/
-├── docs/                         # architecture, schema, MCP tools, setup, specs/, plans/
-├── design/                       # original design artifacts (frozen)
-└── scripts/                      # reconcile_vault, seed_starter_playbooks
-```
-
-## Versioning
-
-Currently `v0.3.0-alpha.1` (adapter expansion). While in alpha, the event-log
-schema, the on-disk layout under `~/.engram/`, and MCP tool signatures may all
-change, with no backward-compatibility guarantees between alpha releases.
-Migrations are version-gated via `schema_version`; `init_schema()` applies any
-`schema/NNN_*.sql` past the highest applied version on every connect.
-
-Once the alpha series ends, Engram follows [SemVer 2.0.0](https://semver.org/):
-breaking schema or MCP changes bump the major; new tools or event types bump the
-minor; bug fixes bump the patch. Releases live as git tags on `main`. Design
-specs and implementation plans: [`docs/superpowers/`](docs/superpowers/).
+All settings live in `~/.engram/config.yml` (secrets in `~/.engram/.env`),
+written by `bin/eos-init`. See **[docs/configuration.md](docs/configuration.md)**
+for the full reference — including the embedding/reranker model options and the
+CPU-vs-GPU lane choice.
 
 ## License
 
