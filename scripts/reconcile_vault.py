@@ -17,7 +17,6 @@ import argparse
 import logging
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
 
 from engram.common.config import load_config
 from engram.common.db import get_connection

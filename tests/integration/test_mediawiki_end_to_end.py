@@ -40,7 +40,9 @@ def httpd(tmp_path):
 
         def do_GET(self):
             if "/api.php" not in self.path:
-                self.send_response(404); self.end_headers(); return
+                self.send_response(404)
+                self.end_headers()
+                return
             from urllib.parse import urlparse, parse_qs
             qs = parse_qs(urlparse(self.path).query)
             action = qs.get("action", [""])[0]
@@ -53,7 +55,9 @@ def httpd(tmp_path):
                 resp = {"parse": {"title": qs.get("page", [""])[0], "pageid": 1,
                                   "text": {"*": state["parse_body"]}}}
             else:
-                self.send_response(400); self.end_headers(); return
+                self.send_response(400)
+                self.end_headers()
+                return
             body = json.dumps(resp).encode()
             self.send_response(200)
             self.send_header("content-type", "application/json")

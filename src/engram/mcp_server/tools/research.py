@@ -46,7 +46,8 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
     def ingest_url(args: dict[str, Any]) -> dict[str, Any]:
         """Fetch + extract on the server side, then gate. Saves a roundtrip
         when the agent already knows the URL it wants."""
-        import httpx, trafilatura
+        import httpx
+        import trafilatura
         url = args["url"]
         r = httpx.get(url, timeout=25, follow_redirects=True,
                       headers={"User-Agent": "engram-research/0.1"})

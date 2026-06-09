@@ -11,7 +11,7 @@ from typing import AsyncIterator
 
 import httpx
 
-from . import Adapter, Candidate, matches_globs, register
+from . import Candidate, matches_globs, register
 
 logger = logging.getLogger("engram.poller.github_repo")
 

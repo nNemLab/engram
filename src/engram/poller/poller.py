@@ -3,7 +3,6 @@ push candidates through dedup.gate, update source state in one tx."""
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
@@ -138,7 +137,7 @@ async def poll_one(conn: sqlite3.Connection, source: dict[str, Any]) -> dict[str
 
 
 async def run() -> None:
-    cfg = load_config()
+    load_config()
     conn = get_connection()
     logger.info("poller starting")
     while True:

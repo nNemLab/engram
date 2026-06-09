@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from typing import Any
 
 from ..common.config import load_config
 from .embed import embed_one
