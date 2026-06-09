@@ -1,4 +1,10 @@
-# Engram
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="design/brand/engram-lockup-horizontal-white.svg">
+    <source media="(prefers-color-scheme: light)" srcset="design/brand/engram-lockup-horizontal-ink.svg">
+    <img alt="Engram" src="design/brand/engram-lockup-horizontal-ink.svg" width="360">
+  </picture>
+</p>
 
 **A personal knowledge platform built around an append-only event log, projected into an Obsidian vault, accessed by agents over MCP.**
 
