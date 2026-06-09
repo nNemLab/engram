@@ -26,6 +26,29 @@ rebuild them. The log is the only thing you have to back up.
 - **Not a vector database.** Hybrid retrieval over `sqlite-vec` + FTS5; RRF fused; ranked by source-tier × recency × confidence. If you need a real vector DB at scale, this is the wrong project.
 - **Not a Claude API wrapper.** It exposes tools to a kernel (Claude Code or any MCP client). The kernel does the reasoning; Engram is storage and retrieval.
 
+## Quick start
+
+```bash
+# 1. Initialize (requires uv). Builds ~/.engram/.venv and installs engram into
+#    it, then creates ~/.engram/{config.yml,.env,vault,db.sqlite}.
+./bin/eos-init
+
+# 2. Wire the MCP server into Claude Code.
+claude mcp add -s user engram ~/.engram/.venv/bin/engram-mcp
+
+# 3. Start the daemons (systemd user units; copy them in first — see docs/setup.md).
+systemctl --user enable --now \
+  engram-projector engram-watcher engram-reactor engram-poller engram-daily-digest.timer
+
+# 4. Optional: register a polled source (see "What you can curate" below).
+./bin/eos-source add docker-docs-linux \
+  --name "Docker Docs (Linux)" --adapter sitemap \
+  --url https://docs.docker.com/sitemap.xml \
+  --include '*/engine/*' --schedule 7d
+```
+
+Full setup, troubleshooting, and round-trip verification: [docs/setup.md](docs/setup.md).
+
 ## What you can curate
 
 Anything text-shaped that you want an agent to remember and reason over. Content
@@ -143,29 +166,6 @@ Full internals — component-by-component, the confidence model, and failure/rec
 modes: **[docs/architecture.md](docs/architecture.md)**. Event taxonomy:
 [docs/event-log-schema.md](docs/event-log-schema.md). Tools:
 [docs/mcp-tool-reference.md](docs/mcp-tool-reference.md).
-
-## Quick start
-
-```bash
-# 1. Initialize (requires uv). Builds ~/.engram/.venv and installs engram into
-#    it, then creates ~/.engram/{config.yml,.env,vault,db.sqlite}.
-./bin/eos-init
-
-# 2. Wire the MCP server into Claude Code.
-claude mcp add -s user engram ~/.engram/.venv/bin/engram-mcp
-
-# 3. Start the daemons (systemd user units; copy them in first — see docs/setup.md).
-systemctl --user enable --now \
-  engram-projector engram-watcher engram-reactor engram-poller engram-daily-digest.timer
-
-# 4. Optional: register a polled source (see "What you can curate" above).
-./bin/eos-source add docker-docs-linux \
-  --name "Docker Docs (Linux)" --adapter sitemap \
-  --url https://docs.docker.com/sitemap.xml \
-  --include '*/engine/*' --schedule 7d
-```
-
-Full setup, troubleshooting, and round-trip verification: [docs/setup.md](docs/setup.md).
 
 ## Configuration
 
