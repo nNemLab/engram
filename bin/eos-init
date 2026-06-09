@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# First-time setup. Creates ~/.engram, copies config + .env, initializes the DB,
-# scaffolds the vault from the template.
+# First-time setup. Creates ~/.engram, builds the runtime venv and installs
+# engram into it, copies config + .env, scaffolds the vault, initializes the DB.
+# Requires uv (https://docs.astral.sh/uv/) and Python 3.11+.
 set -euo pipefail
 
 src="$(cd "$(dirname "$0")/.." && pwd)"
 root="${ENGRAM_ROOT:-$HOME/.engram}"
+venv="${ENGRAM_VENV:-$root/.venv}"
+
+if ! command -v uv >/dev/null 2>&1; then
+    echo "error: 'uv' not found on PATH. Install it from https://docs.astral.sh/uv/ and re-run." >&2
+    exit 1
+fi
 
 echo "==> Engram init at $root"
 mkdir -p "$root" "$root/playbooks/scratch" "$root/playbooks/curated" "$root/playbooks/runs"
@@ -35,10 +42,22 @@ else
     echo "  = $root/vault (kept existing)"
 fi
 
+# Runtime venv. The systemd units and bin/ wrappers run from here, so engram
+# must be installed into it (not just the caller's active environment).
+echo "==> Creating venv at $venv and installing engram (editable)"
+if [[ ! -d "$venv" ]]; then
+    uv venv "$venv"
+    echo "  + $venv"
+else
+    echo "  = $venv (kept existing)"
+fi
+uv pip install --python "$venv/bin/python" -e "$src"
+echo "  + engram installed (editable) into $venv"
+
 # Initialize DB. The python entry points apply schema on first connect.
 export ENGRAM_CONFIG="$root/config.yml"
 echo "==> Initializing database (applies schema, creates vec0 table)"
-python -c "from engram.common.db import get_connection; c = get_connection(); c.close(); print('  ok')"
+"$venv/bin/python" -c "from engram.common.db import get_connection; c = get_connection(); c.close(); print('  ok')"
 
 cat <<EOF
 
@@ -49,10 +68,10 @@ Next steps:
   2. Edit $root/.env for API keys (Tavily, etc.).
   3. Open $root/vault in Obsidian; install Dataview + Templater plugins.
   4. Wire the MCP server into Claude Code:
-       claude mcp add -s user engram \$HOME/.engram/.venv/bin/engram-mcp
+       claude mcp add -s user engram $venv/bin/engram-mcp
        claude mcp list   # verify ✓ Connected
-  5. In separate shells (or systemd units):
-       engram-projector
-       engram-watcher
-       engram-reactor
+  5. In separate shells (or via the systemd user units):
+       ./bin/eos-projector
+       ./bin/eos-watcher
+       ./bin/eos-reactor
 EOF

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Top-level dispatcher. `aos <subcommand>` routes to bin/aos-<subcommand>.
+# Top-level dispatcher. `eos <subcommand>` routes to bin/eos-<subcommand>.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 
 if [[ $# -lt 1 ]]; then
     cat <<EOF
-aos — Engram control surface
+eos — Engram control surface
 
-usage: aos <command> [args]
+usage: eos <command> [args]
 
 commands:
   init        First-time setup (db, vault, config)
@@ -18,12 +18,14 @@ commands:
   reactor     Run the event reactor
   status      Show daemon health and counts
   query       RAG query (alias for: engram-rag query)
+  source      Manage polled sources (alias for: engram-poller source ...)
+  digest      Synthesize the last 24h of events into an episode
 EOF
     exit 1
 fi
 
 cmd="$1"; shift
-target="$here/aos-$cmd"
+target="$here/eos-$cmd"
 if [[ ! -x "$target" ]]; then
     echo "unknown command: $cmd" >&2
     exit 2

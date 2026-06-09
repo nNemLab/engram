@@ -15,7 +15,7 @@ from urllib.parse import quote
 import httpx
 import trafilatura
 
-from . import Adapter, Candidate, matches_globs, register
+from . import Candidate, matches_globs, register
 from ._http import AsyncRateLimiter, fetch_with_politeness
 
 logger = logging.getLogger("engram.poller.mediawiki_api")

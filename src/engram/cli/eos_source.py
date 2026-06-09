@@ -84,8 +84,10 @@ def main(argv: list[str] | None = None) -> int:
             body["source_tier"] = args.source_tier
         if args.include or args.exclude:
             body["config"] = {}
-            if args.include: body["config"]["include"] = args.include
-            if args.exclude: body["config"]["exclude"] = args.exclude
+            if args.include:
+                body["config"]["include"] = args.include
+            if args.exclude:
+                body["config"]["exclude"] = args.exclude
         out = tools["sources.set"]["handler"](body)
     else:
         return 2

@@ -12,8 +12,8 @@ from xml.etree import ElementTree as ET
 import httpx
 import trafilatura
 
-from . import Adapter, Candidate, matches_globs, register
-from ._http import AsyncRateLimiter, FetchResult, HTTPCacheEntry, fetch_with_politeness
+from . import Candidate, matches_globs, register
+from ._http import AsyncRateLimiter, HTTPCacheEntry, fetch_with_politeness
 
 logger = logging.getLogger("engram.poller.sitemap")
 NS = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}

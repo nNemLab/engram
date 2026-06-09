@@ -13,7 +13,7 @@ from typing import AsyncIterator
 import httpx
 import trafilatura
 
-from . import Adapter, Candidate, register
+from . import Candidate, register
 from ._http import AsyncRateLimiter, HTTPCacheEntry, fetch_with_politeness
 
 logger = logging.getLogger("engram.poller.urls")

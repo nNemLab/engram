@@ -2,7 +2,7 @@
 
 **A personal knowledge platform built around an append-only event log, projected into an Obsidian vault, accessed by agents over MCP.**
 
-> **Status:** `v0.3.0-alpha.1` — dev build. APIs, schema, and on-disk layout may change without migration paths until `v0.1.0`.
+> **Status:** `v0.3.0-alpha.1` — dev build. APIs, schema, and on-disk layout may change without migration paths between alpha releases.
 
 ---
 
@@ -121,7 +121,7 @@ CLI mirror: `bin/eos-source` for shell-side ops without going through MCP.
 ### Playbooks (`playbooks/`)
 Two lanes:
 - **Scratch (Jupyter):** notebooks under `playbooks/scratch/`, executed headlessly via `papermill`. Default for ad-hoc work.
-- **Curated (Marimo):** reactive Python files under `playbooks/curated/`. For workflows you want to re-run reproducibly. (Lane exists; no curated playbooks ship in `v0.1.0-alpha.1`.)
+- **Curated (Marimo):** reactive Python files under `playbooks/curated/`. For workflows you want to re-run reproducibly. (Lane exists; no curated playbooks ship in `v0.3.0-alpha.1`.)
 
 `playbook.run` writes outputs to `playbooks/runs/<run_id>/`. `playbook.summarize` pushes a summary string into the KB as `kind=playbook-summary`; the full notebook stays in the run dir.
 
@@ -144,20 +144,18 @@ Tier weights and half-life are configured in `config.yml`. Per-entry `ttl_days` 
 ## Quick start
 
 ```bash
-# 1. Install (editable; brings in all deps).
-uv pip install -e .
-
-# 2. Initialize. Creates ~/.engram/{config.yml,.env,vault,db.sqlite,.venv}.
+# 1. Initialize (requires uv). Builds ~/.engram/.venv and installs engram into
+#    it, then creates ~/.engram/{config.yml,.env,vault,db.sqlite}.
 ./bin/eos-init
 
-# 3. Wire the MCP server into Claude Code.
+# 2. Wire the MCP server into Claude Code.
 claude mcp add -s user engram ~/.engram/.venv/bin/engram-mcp
 
-# 4. Start the daemons (systemd user units).
+# 3. Start the daemons (systemd user units; copy them in first — see docs/setup.md).
 systemctl --user enable --now \
   engram-projector engram-watcher engram-reactor engram-poller engram-daily-digest.timer
 
-# 5. Optional: register a polled source.
+# 4. Optional: register a polled source.
 ./bin/eos-source add docker-docs-linux \
   --name "Docker Docs (Linux)" --adapter sitemap \
   --url https://docs.docker.com/sitemap.xml \
@@ -210,13 +208,13 @@ engram/
 
 ## Versioning
 
-Currently `v0.2.0-alpha.1` (source curation). Pre-1.0 means:
+Currently `v0.3.0-alpha.1` (adapter expansion). While in alpha:
 
 - The event log schema and the on-disk layout under `~/.engram/` may change. Migrations are version-gated via `schema_version`; the `init_schema()` runner applies any `schema/NNN_*.sql` past the highest applied version on every connect.
 - MCP tool signatures may add or remove parameters.
-- No backward-compatibility guarantees until `v0.1.0` (the first stable line).
+- No backward-compatibility guarantees between alpha releases.
 
-After `v0.1.0`, this project follows [SemVer 2.0.0](https://semver.org/): breaking schema or MCP changes bump the major; new tools or new event types bump the minor; bug fixes bump the patch.
+Once the alpha series ends, this project follows [SemVer 2.0.0](https://semver.org/): breaking schema or MCP changes bump the major; new tools or new event types bump the minor; bug fixes bump the patch.
 
 Releases live as git tags on `main`. See [`docs/superpowers/`](docs/superpowers/) for design specs and implementation plans.
 

@@ -2,7 +2,6 @@
 URL-derived path so successive revisions overwrite the same file. Non-sourced
 content keeps the existing title-slug-hash scheme.
 """
-import sqlite3
 
 from engram.projector.renderers import render_kb
 
