@@ -3,12 +3,12 @@
 All notable changes to this project are documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-From v0.3.0 onward, releases are automated by
+From v0.2.1 onward, releases are automated by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/); entries below
-v0.3.0 were authored by hand.
+v0.2.1 were authored by hand.
 
-## [0.3.0](https://github.com/nNemLab/engram/compare/v0.2.0...v0.3.0) (2026-06-10)
+## [0.2.1](https://github.com/nNemLab/engram/compare/v0.2.0...v0.2.1) (2026-06-10)
 
 
 ### Features
