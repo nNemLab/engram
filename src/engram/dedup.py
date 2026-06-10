@@ -18,7 +18,7 @@ from typing import Literal
 from . import log as event_log
 from .common.config import load_config
 
-Outcome = Literal["new", "exact_dup", "near_dup", "contradicts", "superseded"]
+Outcome = Literal["new", "exact_dup", "near_dup", "contradicts", "superseded", "supersede_blocked"]
 
 
 @dataclass
@@ -93,6 +93,40 @@ def insert_content(
     return h
 
 
+def _record_supersede_contradiction(
+    conn: sqlite3.Connection, human_hash: str, upstream_hash: str,
+    source_url: str | None, actor: str,
+) -> None:
+    """Upsert a single unresolved contradiction for a protected row (#37).
+
+    Keeps exactly one pending contradiction per protected row: if one already
+    exists for this human hash, advance its hash_b to the newest upstream;
+    otherwise insert. Emits a `contradicted` event either way.
+    """
+    existing = conn.execute(
+        "SELECT id FROM contradictions WHERE hash_a = ? AND resolved = 0 "
+        "ORDER BY id DESC LIMIT 1",
+        (human_hash,),
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE contradictions SET hash_b = ?, detected_by = 'poller', "
+            "detected_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+            (upstream_hash, existing["id"]),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO contradictions (hash_a, hash_b, detected_by) VALUES (?, ?, 'poller')",
+            (human_hash, upstream_hash),
+        )
+    event_log.append(
+        conn, "contradicted",
+        {"hash_a": human_hash, "hash_b": upstream_hash,
+         "detected_by": "poller", "source_url": source_url},
+        actor=actor,
+    )
+
+
 def gate(
     conn: sqlite3.Connection,
     *,
@@ -123,12 +157,29 @@ def gate(
     # different bytes, treat this write as a new revision rather than a fresh ingest.
     if source_url:
         live = conn.execute(
-            "SELECT hash, revision FROM content "
+            "SELECT hash, revision, protected FROM content "
             "WHERE source_url = ? AND is_current = 1 AND tombstoned = 0 "
             "ORDER BY revision DESC LIMIT 1",
             (source_url,),
         ).fetchone()
         if live:
+            if live["protected"]:
+                # #37: never silently supersede a human-edited row. Preserve the
+                # upstream change as a non-current revision and raise a
+                # contradiction instead of overwriting the human's edit. No
+                # `superseded` event -> the projector leaves the vault file alone.
+                # Note: the protected row is never bumped, so repeated upstream
+                # changes all land at the same revision number — harmless, since
+                # these rows are non-current and tracked via the contradiction.
+                new_revision = live["revision"] + 1
+                insert_content(
+                    conn, body=body, title=title, source_url=source_url,
+                    source_tier=source_tier, confidence=confidence, ttl_days=ttl_days,
+                    kind=kind, revision=new_revision, is_current=0, source_id=source_id,
+                )
+                _record_supersede_contradiction(conn, live["hash"], h, source_url, actor)
+                return GateResult(outcome="supersede_blocked", hash=h)
+            # --- existing (unprotected) supersede logic continues unchanged below ---
             new_revision = live["revision"] + 1
             insert_content(
                 conn, body=body, title=title, source_url=source_url,

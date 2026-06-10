@@ -101,7 +101,11 @@ def _on_change(conn: sqlite3.Connection, rel: str, abs_path: str) -> None:
     diff = unified_diff(row["rendered_body"], new_body, rel)
     h = row["content_hash"]
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    conn.execute("UPDATE content SET body = ?, updated_at = ? WHERE hash = ?", (new_body, now, h))
+    # Mark the row human-curated so the poller can't silently supersede it (#37).
+    conn.execute(
+        "UPDATE content SET body = ?, updated_at = ?, protected = 1 WHERE hash = ?",
+        (new_body, now, h),
+    )
     conn.execute(
         "UPDATE vault_state SET rendered_body = ?, rendered_at = ? WHERE vault_path = ?",
         (new_body, now, rel),

@@ -46,13 +46,13 @@ def _classify_error(exc: Exception) -> tuple[bool, str]:
 
 
 async def poll_one(conn: sqlite3.Connection, source: dict[str, Any]) -> dict[str, int]:
-    """Poll one source. Returns {ingested, superseded, exact_dup, errors, candidates_seen}."""
+    """Poll one source. Returns {ingested, superseded, exact_dup, blocked, errors, candidates_seen}."""
     adapter = ADAPTERS.get(source["adapter"])
     if adapter is None:
         raise ValueError(f"unknown adapter: {source['adapter']}")
     src_dict = dict(source)  # mutable copy adapter writes cursor into
-    counts = {"ingested": 0, "superseded": 0, "exact_dup": 0, "errors": 0,
-              "candidates_seen": 0}
+    counts = {"ingested": 0, "superseded": 0, "exact_dup": 0, "blocked": 0,
+              "errors": 0, "candidates_seen": 0}
     error_msg = None
     try:
         async for cand in adapter.fetch(src_dict):
@@ -69,6 +69,8 @@ async def poll_one(conn: sqlite3.Connection, source: dict[str, Any]) -> dict[str
                     counts["superseded"] += 1
                 elif r.outcome == "exact_dup":
                     counts["exact_dup"] += 1
+                elif r.outcome == "supersede_blocked":
+                    counts["blocked"] += 1
             except Exception:
                 logger.exception("gate failed for %s", cand.source_url)
                 counts["errors"] += 1
@@ -120,6 +122,7 @@ async def poll_one(conn: sqlite3.Connection, source: dict[str, Any]) -> dict[str
             "ingested": counts["ingested"],
             "superseded": counts["superseded"],
             "exact_dup": counts["exact_dup"],
+            "blocked": counts["blocked"],
             "errors": counts["errors"],
         },
         actor="poller",
