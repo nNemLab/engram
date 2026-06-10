@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Verify the integrity of the canonical event log: re-derive every content hash,
+# check the cross-table invariants, and run PRAGMA integrity_check. Prints each
+# check and exits non-zero if anything fails — usable from cron / CI.
+#
+# usage: eos verify
+set -euo pipefail
+
+"${ENGRAM_VENV:-$HOME/.engram/.venv}/bin/python" - <<'PY'
+import sys
+
+from engram import maintenance
+from engram.common.config import load_config
+
+db_path = load_config().db_path
+report = maintenance.verify(db_path)
+
+print(f"Engram verify: {db_path}")
+print(f"  content rows checked: {report['content_checked']}")
+for c in report["checks"]:
+    mark = "✓" if c["ok"] else "✗"
+    print(f"  {mark} {c['name']:<18} {c['detail']}")
+n = len(report["hash_mismatches"])
+print(f"  hash mismatches: {n}")
+for h in report["hash_mismatches"]:
+    print(f"      {h}")
+
+if report["ok"]:
+    print("OK — the event log is intact.")
+    sys.exit(0)
+print("FAILED — the event log has integrity problems (see above).", file=sys.stderr)
+sys.exit(1)
+PY
