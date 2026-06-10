@@ -9,6 +9,12 @@ from ...rag.query import hybrid_search
 
 def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
 
+    def cite(args: dict[str, Any]) -> dict[str, Any]:
+        from ...rag.usage import record_cited
+        hashes = args["hashes"]
+        record_cited(conn, hashes, query=args.get("query", ""), turn_id=args.get("turn_id"))
+        return {"cited": len(hashes)}
+
     def query(args: dict[str, Any]) -> list[dict[str, Any]]:
         hits = hybrid_search(
             conn, args["query"],
@@ -30,6 +36,19 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
         ]
 
     return {
+        "rag.cite": {
+            "description": "Record that the answer was grounded in these content hashes "
+                           "(feeds usage-weighted ranking). Call when you use retrieved memory.",
+            "input_schema": {
+                "type": "object", "required": ["hashes"],
+                "properties": {
+                    "hashes":  {"type": "array", "items": {"type": "string"}},
+                    "query":   {"type": "string"},
+                    "turn_id": {"type": "string"},
+                },
+            },
+            "handler": cite,
+        },
         "rag.query": {
             "description": "Hybrid retrieval (dense + BM25, RRF-fused, confidence-ranked). "
                            "Use exclude_source_tiers=['agent-derived'] when synthesizing to "
