@@ -100,3 +100,23 @@ def test_ups_injects_block_on_weak(stub_daemon):
     assert r.returncode == 0
     out = json.loads(r.stdout)
     assert "Relevant memory" in out["hookSpecificOutput"]["additionalContext"]
+
+
+def test_session_start_injects_prime(stub_daemon):
+    stub_daemon["routes"]["/prime"] = {"block": "## Engram session priming\n- goal"}
+    r = _run_hook("session_start.sh", json.dumps({"cwd": "/x", "source": "startup"}), stub_daemon["url"])
+    assert r.returncode == 0
+    out = json.loads(r.stdout)
+    assert out["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+    assert "session priming" in out["hookSpecificOutput"]["additionalContext"]
+
+
+def test_session_start_quiet_on_empty(stub_daemon):
+    stub_daemon["routes"]["/prime"] = {"block": ""}
+    r = _run_hook("session_start.sh", json.dumps({"cwd": "/x"}), stub_daemon["url"])
+    assert r.returncode == 0 and json.loads(r.stdout) == {}
+
+
+def test_session_start_fail_open():
+    r = _run_hook("session_start.sh", json.dumps({"cwd": "/x"}), "http://127.0.0.1:1")
+    assert r.returncode == 0 and json.loads(r.stdout) == {}
