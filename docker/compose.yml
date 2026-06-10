@@ -1,0 +1,48 @@
+name: engram
+
+services:
+  engram:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      # Build-time internet (pip + model bake). Runtime stays firewalled — the
+      # container makes no outbound calls except the configured LLM + internal SearXNG.
+      network: host
+    image: engram:local
+    restart: unless-stopped
+    # SECURITY: loopback only. engram exposes playbook.run (arbitrary code).
+    # Do NOT publish to 0.0.0.0 / a LAN without an authenticating reverse proxy.
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - engram-data:/data
+      - ${ENGRAM_VAULT:-./vault}:/data/vault
+    env_file:
+      # Optional: holds your secrets (LLM key, source tokens). `cp .env.example .env`.
+      # `required: false` so a fresh clone can `docker compose config`/`up` without it.
+      - path: .env
+        required: false
+    environment:
+      - ENGRAM_LLM_BASE_URL=${ENGRAM_LLM_BASE_URL:-}
+      - ENGRAM_LLM_API_KEY=${ENGRAM_LLM_API_KEY:-}
+      - ENGRAM_LLM_MODEL=${ENGRAM_LLM_MODEL:-}
+      # Runtime uid/gid for file ownership (default 1000). Set to your id -u/-g
+      # if you want to edit the bind-mounted vault as a non-1000 host user.
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+    depends_on:
+      - searxng
+
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    restart: unless-stopped
+    # Internal only — not published to the host.
+    expose:
+      - "8080"
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080/
+
+volumes:
+  engram-data:

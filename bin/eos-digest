@@ -8,7 +8,7 @@ DATE="$(date -u +%Y-%m-%d)"
 RUN_DIR="$HOME/.engram/playbooks/runs/auto-digest-$DATE"
 mkdir -p "$RUN_DIR"
 
-# Source ~/.engram/.env if present, so the playbook sees ENGRAM_ANTHROPIC_API_KEY etc.
+# Source ~/.engram/.env if present, so the playbook sees ENGRAM_LLM_* etc.
 ENV_FILE="$HOME/.engram/.env"
 if [[ -f "$ENV_FILE" ]]; then
     set -a

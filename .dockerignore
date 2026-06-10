@@ -1,0 +1,23 @@
+# Docker build context = repo root (docker/compose.yml uses `context: ..`), so the
+# ignore file must live here, not under docker/. Keeps the image small and prevents
+# secrets / local state from entering build layers.
+.git
+.github
+.venv
+**/__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+docs
+design
+tests
+playbooks/runs/*
+vault
+docker/vault
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+# Never bake secrets into the image.
+.env
+**/.env

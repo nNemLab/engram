@@ -58,6 +58,14 @@ systemctl --user enable --now \
 
 Full setup, troubleshooting, and round-trip verification: [docs/setup.md](docs/setup.md).
 
+### Docker
+
+Prefer containers? `docker compose -f docker/compose.yml up -d --build` brings up the
+full stack (MCP server + daemons + a private SearXNG); connect any MCP client with
+`claude mcp add --transport http engram http://localhost:8765/mcp`. See
+**[docker/README.md](docker/README.md)** for setup, the loopback-only security note,
+and the provider-agnostic `ENGRAM_LLM_*` config.
+
 ## Uninstall
 
 ```bash
@@ -68,7 +76,8 @@ Removes the runtime (`~/.engram` — database, vault, venv — plus the systemd
 units and the Claude Code MCP registration). It first reports the database size
 and offers to export it to a `engram-export-<timestamp>.tar.gz`, then requires
 you to type `DELETE` to confirm. **Removal is permanent; unexported curated
-knowledge is lost for good.** The source checkout is left in place.
+knowledge is lost for good.** The source checkout is left in place. It auto-detects
+whether you have a native or Docker install (and handles both).
 
 ## What you can curate
 

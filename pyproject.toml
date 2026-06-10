@@ -40,7 +40,9 @@ dependencies = [
     "rich>=13.0",
     "trafilatura>=2.0",
     "arxiv>=2.1",
-    "anthropic>=0.109.1",
+    "openai>=1.40",
+    "uvicorn>=0.30",
+    "starlette>=0.37",
     "pymupdf>=1.24",
 ]
 
@@ -70,6 +72,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/engram"]
+
+# Ship the SQL schema inside the wheel so non-editable installs (the Docker image)
+# can find it at engram/schema. Editable/dev installs use the repo-root schema/ dir.
+[tool.hatch.build.targets.wheel.force-include]
+"schema" = "engram/schema"
 
 [tool.ruff]
 line-length = 110
