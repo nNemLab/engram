@@ -192,3 +192,10 @@ def test_poll_one_counts_blocked(conn, monkeypatch):
     assert counts["blocked"] == 1
     assert counts["superseded"] == 0
     assert counts["ingested"] == 0
+
+    # The source_polled summary event reflects the blocked count (audit trail).
+    import json
+    payload = json.loads(conn.execute(
+        "SELECT payload FROM events WHERE type = 'source_polled' ORDER BY id DESC LIMIT 1"
+    ).fetchone()[0])
+    assert payload["blocked"] == 1

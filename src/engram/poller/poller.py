@@ -122,6 +122,7 @@ async def poll_one(conn: sqlite3.Connection, source: dict[str, Any]) -> dict[str
             "ingested": counts["ingested"],
             "superseded": counts["superseded"],
             "exact_dup": counts["exact_dup"],
+            "blocked": counts["blocked"],
             "errors": counts["errors"],
         },
         actor="poller",

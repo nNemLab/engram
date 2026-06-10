@@ -168,6 +168,9 @@ def gate(
                 # upstream change as a non-current revision and raise a
                 # contradiction instead of overwriting the human's edit. No
                 # `superseded` event -> the projector leaves the vault file alone.
+                # Note: the protected row is never bumped, so repeated upstream
+                # changes all land at the same revision number — harmless, since
+                # these rows are non-current and tracked via the contradiction.
                 new_revision = live["revision"] + 1
                 insert_content(
                     conn, body=body, title=title, source_url=source_url,
