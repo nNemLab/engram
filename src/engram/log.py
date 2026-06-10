@@ -5,8 +5,9 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any
+
+from .common.time import utcnow_iso
 
 
 @dataclass
@@ -19,10 +20,6 @@ class Event:
     correlation_id: str | None
 
 
-def _now() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-
-
 def append(
     conn: sqlite3.Connection,
     type: str,
@@ -32,7 +29,7 @@ def append(
 ) -> int:
     cur = conn.execute(
         "INSERT INTO events (ts, type, payload, actor, correlation_id) VALUES (?, ?, ?, ?, ?)",
-        (_now(), type, json.dumps(payload, separators=(",", ":")), actor, correlation_id),
+        (utcnow_iso("ms"), type, json.dumps(payload, separators=(",", ":")), actor, correlation_id),
     )
     return int(cur.lastrowid or 0)
 

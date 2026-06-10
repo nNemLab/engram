@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime
 from typing import Any
+
+from ...common.time import utcnow_iso
 
 DEFAULT_SCHEDULE = {
     "sitemap":       "7d",
@@ -12,10 +13,6 @@ DEFAULT_SCHEDULE = {
     "mediawiki-api": "7d",
     "urls":          "7d",
 }
-
-
-def _utcnow_iso() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -87,7 +84,7 @@ def register(conn: sqlite3.Connection) -> dict[str, dict]:
     def fetch_now(args: dict[str, Any]) -> dict[str, Any]:
         cur = conn.execute(
             "UPDATE sources SET next_poll_at = NULL, updated_at = ? WHERE id = ?",
-            (_utcnow_iso(), args["id"]),
+            (utcnow_iso("s"), args["id"]),
         )
         conn.commit()
         return {"triggered": cur.rowcount > 0, "id": args["id"]}
@@ -121,7 +118,7 @@ def register(conn: sqlite3.Connection) -> dict[str, dict]:
         if not fields:
             return {"updated_fields": []}
         fields.append("updated_at = ?")
-        params.append(_utcnow_iso())
+        params.append(utcnow_iso("s"))
         params.append(args["id"])
         conn.execute(f"UPDATE sources SET {', '.join(fields)} WHERE id = ?", params)
         conn.commit()
