@@ -1,6 +1,7 @@
 """Hybrid retrieval: vec0 (dense) + FTS5 (sparse), fused via Reciprocal Rank Fusion."""
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC
@@ -9,6 +10,10 @@ from .. import log as event_log
 from ..common.config import load_config
 from .embed import embed_one
 from .usage import usage_factor
+
+# Word tokens for building a safe FTS5 MATCH expression. `\w+` (Unicode by
+# default for str patterns) drops every operator-significant character.
+_FTS_TOKEN = re.compile(r"\w+")
 
 
 @dataclass
@@ -32,12 +37,33 @@ def _vector_hits(conn: sqlite3.Connection, query_emb: bytes, k: int) -> list[tup
     return [(r["content_hash"], 1.0 - float(r["distance"])) for r in rows]
 
 
+def _fts_match_expr(query: str) -> str | None:
+    """Turn a raw user query into a safe FTS5 MATCH expression.
+
+    FTS5 treats the MATCH string as a *query expression*, so raw punctuation
+    (`?`, `'`, `.`, `-`, quotes, parens, bare AND/OR/NOT, `*`, …) raises syntax
+    errors — which breaks retrieval (and the grounding daemon) on the kinds of
+    natural-language prompts users actually type. We extract word tokens and
+    quote each as an FTS5 string literal: that matches them as plain terms
+    (implicit AND, the prior behaviour) while neutralising every operator.
+    Returns None when there are no usable tokens (empty / punctuation-only).
+    """
+    tokens = _FTS_TOKEN.findall(query)
+    if not tokens:
+        return None
+    # Tokens are word characters only, so they never contain a `"` to escape.
+    return " ".join(f'"{t}"' for t in tokens)
+
+
 def _bm25_hits(conn: sqlite3.Connection, query: str, k: int) -> list[tuple[str, float]]:
     # FTS5 returns negative ranks; lower is better. We invert for use as a score.
+    match = _fts_match_expr(query)
+    if match is None:
+        return []
     rows = conn.execute(
         "SELECT hash, rank FROM content_fts WHERE content_fts MATCH ? "
         "ORDER BY rank LIMIT ?",
-        (query, k),
+        (match, k),
     ).fetchall()
     return [(r["hash"], -float(r["rank"])) for r in rows]
 
@@ -82,7 +108,12 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = N
     except Exception:
         # Embedding failure should not kill retrieval; fall back to BM25 only.
         pass
-    rankings.append(_bm25_hits(conn, query, k * fetch_mult))
+    try:
+        rankings.append(_bm25_hits(conn, query, k * fetch_mult))
+    except Exception:
+        # Defence in depth: a malformed FTS expression must never kill retrieval;
+        # fall back to dense-only rather than raising.
+        pass
 
     fused = _rrf_fuse(rankings, k=k * fetch_mult, rrf_k=cfg.rag.rrf_k)
     if not fused:

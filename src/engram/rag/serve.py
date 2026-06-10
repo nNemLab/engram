@@ -45,7 +45,12 @@ def build_serve_app(conn: sqlite3.Connection | None = None) -> Starlette:
                 raise ValueError
         except Exception:
             return JSONResponse({"error": "query (non-empty string) required"}, status_code=400)
-        out = await _run(ground, query=query, token_budget=body.get("token_budget"))
+        try:
+            out = await _run(ground, query=query, token_budget=body.get("token_budget"))
+        except Exception:
+            # Fail soft: never 500 a turn. The ambient hook treats this as "no
+            # relevant memory" rather than an error.
+            out = {"verdict": "NONE", "block": "", "hashes": [], "hits": []}
         return JSONResponse(out)
 
     async def prime_(req: Request) -> JSONResponse:
@@ -58,7 +63,10 @@ def build_serve_app(conn: sqlite3.Connection | None = None) -> Starlette:
                 {"error": "invalid body (expected a JSON object; token_budget must be an integer)"},
                 status_code=400,
             )
-        out = await _run(prime, cwd=cwd, token_budget=tb)
+        try:
+            out = await _run(prime, cwd=cwd, token_budget=tb)
+        except Exception:
+            out = {"block": ""}
         return JSONResponse(out)
 
     async def cite(req: Request) -> JSONResponse:
