@@ -8,6 +8,13 @@ From v0.2.1 onward, releases are automated by
 [Conventional Commits](https://www.conventionalcommits.org/); entries below
 v0.2.1 were authored by hand.
 
+## [0.2.2](https://github.com/nNemLab/engram/compare/v0.2.1...v0.2.2) (2026-06-10)
+
+
+### Bug Fixes
+
+* **rag:** sanitize FTS5 MATCH query so special characters don't crash retrieval ([#64](https://github.com/nNemLab/engram/issues/64)) ([efbdea0](https://github.com/nNemLab/engram/commit/efbdea064b8a2e510d38a6b3fc5dcb91a62c7c56)), closes [#63](https://github.com/nNemLab/engram/issues/63)
+
 ## [0.2.1](https://github.com/nNemLab/engram/compare/v0.2.0...v0.2.1) (2026-06-10)
 
 
