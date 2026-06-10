@@ -30,3 +30,30 @@ def classify(hits: list[Any], cfg: Any) -> Verdict:
     if top >= cfg.tau_high and margin >= cfg.delta:
         return "STRONG"
     return "WEAK"
+
+
+def _est_tokens(s: str) -> int:
+    return (len(s) + 3) // 4
+
+
+def pack(hits: list[Any], token_budget: int) -> dict[str, Any]:
+    """Pack the highest-value hits (title + snippet) into a markdown block that
+    fits token_budget. Returns {block, hashes}. Deterministic; always includes the
+    top hit if any budget at all."""
+    if not hits:
+        return {"block": "", "hashes": []}
+    lines = ["## Relevant memory"]
+    used = _est_tokens(lines[0])
+    chosen: list[str] = []
+    for h in hits:
+        title = (h.title or "(untitled)")
+        snippet = " ".join((h.body or "").split())[:280]
+        src = f" — {h.source_url}" if getattr(h, "source_url", None) else ""
+        entry = f"- **{title}**{src} `[{h.hash[:12]}]`\n  {snippet}"
+        cost = _est_tokens(entry)
+        if chosen and used + cost > token_budget:
+            break
+        lines.append(entry)
+        used += cost
+        chosen.append(h.hash)
+    return {"block": "\n".join(lines), "hashes": chosen}
