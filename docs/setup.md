@@ -1,5 +1,7 @@
 # Setup
 
+> Part of the [engram documentation](README.md).
+
 ## Prerequisites
 
 - [uv](https://docs.astral.sh/uv/) — builds the venv and installs engram

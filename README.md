@@ -6,147 +6,64 @@
   </picture>
 </p>
 
-**A personal knowledge platform built around an append-only event log, projected into an Obsidian vault, accessed by agents over MCP.**
+<p align="center">
+  <strong>A personal knowledge platform built around an append-only event log, projected into an Obsidian vault, accessed by agents over MCP.</strong>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="License: AGPL-3.0-or-later" src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg"></a>
+  <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-blue.svg">
+  <a href="https://docs.astral.sh/uv/"><img alt="built with uv" src="https://img.shields.io/badge/built%20with-uv-261230.svg"></a>
+  <a href="https://github.com/nNemLab/engram/releases"><img alt="latest release" src="https://img.shields.io/github/v/release/nNemLab/engram?display_name=tag&sort=semver"></a>
+</p>
 
 > **Status:** `v0.2.0` — early development. While on the `0.x` series, APIs, schema, and on-disk layout may change between minor versions without migration paths.
 
 ---
 
-## What it is
+## Table of contents
 
-Engram is a single-user knowledge system designed to be the long-term memory
-layer for an LLM agent (Claude Code in particular, but any MCP-capable client).
-It treats:
+- [Highlights](#highlights)
+- [How it works](#how-it-works)
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Docker](#docker)
+- [Ambient memory](#ambient-memory)
+- [What you can curate](#what-you-can-curate)
+- [Documentation](#documentation)
+- [Configuration](#configuration)
+- [Privacy & offline](#privacy--offline)
+- [Uninstall](#uninstall)
+- [Contributing](#contributing)
+- [FAQ](#faq)
+- [License](#license)
+
+## Highlights
+
+- **Event-log-canonical.** Every state change is an immutable event in an
+  append-only SQLite log. The FTS index, vector index, and Obsidian vault are
+  all rebuildable projections — the log is the only thing you have to back up.
+- **Hybrid retrieval.** `sqlite-vec` vector search fused with SQLite FTS5
+  full-text search via reciprocal-rank fusion, ranked by source-tier × recency ×
+  confidence.
+- **Ambient memory.** An optional Claude Code plugin auto-injects calibrated
+  retrieval on every turn, primes each session, and records what it used — so
+  memory shows up without being asked for. See [Ambient memory](#ambient-memory).
+- **Self-hosted & offline-capable.** Runs entirely on your machine. Everything
+  curated is local; query, read, and edit with no network. Web search goes
+  through your own SearXNG.
+- **Human-auditable.** The vault is plain markdown you can read, grep, diff, and
+  correct by hand — and every change is an immutable, timestamped event.
+- **One write path.** Human and agent write through the same dedup gate. There
+  is no hidden agent-only memory; you can always see and override what was stored.
+
+## How it works
+
+Engram treats:
 
 - **the event log as canonical** — every state change is an immutable event in SQLite,
 - **the Obsidian vault as a projection** — markdown files are a materialized view, not source of truth,
 - **the human and the agent as peers** — both write through the same dedup gate, both edit the same content.
-
-If the FTS index, vector index, or vault gets corrupted, you replay the log and
-rebuild them. The log is the only thing you have to back up.
-
-## What it is not
-
-- **Not multi-user.** No auth, no concurrency model beyond SQLite's WAL.
-- **Not cloud-hosted.** Runs entirely on your workstation. Self-hosted research uses a local SearXNG; embeddings run on CPU by default.
-- **Not a vector database.** Hybrid retrieval over `sqlite-vec` + FTS5; RRF fused; ranked by source-tier × recency × confidence. If you need a real vector DB at scale, this is the wrong project.
-- **Not a Claude API wrapper.** It exposes tools to a kernel (Claude Code or any MCP client). The kernel does the reasoning; Engram is storage and retrieval.
-
-## Quick start
-
-```bash
-# 1. Get the code.
-git clone https://github.com/nNemLab/engram.git && cd engram
-
-# 2. Initialize (requires uv). Builds ~/.engram/.venv and installs engram into
-#    it, then creates ~/.engram/{config.yml,.env,vault,db.sqlite}.
-./bin/eos-init
-
-# 3. Wire the MCP server into Claude Code.
-claude mcp add -s user engram ~/.engram/.venv/bin/engram-mcp
-
-# 4. Start the daemons (systemd user units; copy them in first — see docs/setup.md).
-systemctl --user enable --now \
-  engram-projector engram-watcher engram-reactor engram-poller engram-daily-digest.timer
-
-# 5. Optional: register a polled source (see "What you can curate" below).
-./bin/eos-source add docker-docs-linux \
-  --name "Docker Docs (Linux)" --adapter sitemap \
-  --url https://docs.docker.com/sitemap.xml \
-  --include '*/engine/*' --schedule 7d
-```
-
-Full setup, troubleshooting, and round-trip verification: [docs/setup.md](docs/setup.md).
-
-### Docker
-
-Prefer containers? `docker compose -f docker/compose.yml up -d --build` brings up the
-full stack (MCP server + daemons + a private SearXNG); connect any MCP client with
-`claude mcp add --transport http engram http://localhost:8765/mcp`. See
-**[docker/README.md](docker/README.md)** for setup, the loopback-only security note,
-and the provider-agnostic `ENGRAM_LLM_*` config.
-
-## Ambient memory (Claude Code plugin)
-
-For auto-injected retrieval on every turn, run the grounding daemon
-(`engram-rag serve`) and enable the plugin at `engram-plugin/`. See
-**[engram-plugin/README.md](engram-plugin/README.md)** for install options and config.
-
-## Uninstall
-
-```bash
-./bin/eos-uninstall
-```
-
-Removes the runtime (`~/.engram` — database, vault, venv — plus the systemd
-units and the Claude Code MCP registration). It first reports the database size
-and offers to export it to a `engram-export-<timestamp>.tar.gz`, then requires
-you to type `DELETE` to confirm. **Removal is permanent; unexported curated
-knowledge is lost for good.** The source checkout is left in place. It auto-detects
-whether you have a native or Docker install (and handles both).
-
-## What you can curate
-
-Anything text-shaped that you want an agent to remember and reason over. Content
-arrives three ways — you write it, the agent writes it, or a polled source feeds
-it — and all three land in the same gate.
-
-| You want to keep... | How |
-|---|---|
-| Your own notes, decisions, episodes | `kb.write`, or drop a markdown file into the vault inbox |
-| Docs sites that change over time | `sitemap` source (e.g. Docker, a framework's docs) |
-| Wikis | `mediawiki-api` source (Fandom game wikis, Wikipedia, PCGamingWiki, …) |
-| A GitHub repo's docs/code tree | `github-repo` source (tracks branch HEAD, incremental via compare API) |
-| Research papers | `research.fetch_arxiv` (abstracts + PDFs) |
-| One-off pages with no feed | `urls` source, or `research.ingest_url` |
-| Web-search findings | `research.search_web` via your local SearXNG, then ingest the keepers |
-
-A polled source is one declarative line. For example, track the Linux-relevant
-slice of Docker's docs, re-checked weekly:
-
-```bash
-./bin/eos-source add docker-docs-linux \
-  --name "Docker Docs (Linux)" --adapter sitemap \
-  --url https://docs.docker.com/sitemap.xml \
-  --include '*/engine/*' --include '*/desktop/install/linux*' \
-  --schedule 7d
-```
-
-The poller fetches on its tick, runs every candidate through the dedup gate, and
-chains revisions when a page changes (old version stays queryable, vault file
-updates in place). Per-source schedules, conditional GETs, and a circuit breaker
-keep it polite.
-
-## Online & offline
-
-Engram is **online to gather, offline to use.**
-
-- **Online:** the poller refreshes live sources, `research.search_web` queries
-  your SearXNG, and the arXiv/URL fetchers pull new material.
-- **Offline:** everything already curated is local — a SQLite database plus a
-  markdown vault. Query, read, and edit it with no network. Embeddings run on
-  CPU locally, so retrieval works on a plane or an air-gapped box. The poller
-  simply pauses and resumes when connectivity returns; nothing else depends on
-  the network.
-
-## Privacy-first & human-auditable
-
-- **Self-hosted, single-user, no telemetry.** Runs entirely on your machine.
-  There is no cloud backend and no account.
-- **Search doesn't leak.** Web search goes through your own SearXNG instance, so
-  queries aren't handed to a third-party search API.
-- **Everything is an event you can read.** The append-only log is a full audit
-  trail — every ingest, merge, supersede, retrieval, and human edit is an
-  immutable, timestamped row. Nothing mutates silently, and superseded revisions
-  stay queryable rather than being deleted.
-- **The store is plain markdown.** The vault is just files in Obsidian:
-  human-readable, greppable, diffable, git-able. You can read or correct anything
-  by hand, and the watcher makes your edits authoritative.
-- **One gate for human and agent.** There is no hidden agent-only memory — you
-  and the kernel write through the same path, so you can always see and override
-  what the agent stored.
-
-## Architecture
 
 ```mermaid
 flowchart TD
@@ -190,18 +107,142 @@ Obsidian become authoritative.
 | **Event log** | Append-only SQLite; canonical source of truth, replayable from 0. |
 | **Dedup gate** | The single write path: `exact_dup` / `superseded` / `near_dup` / `new`. |
 | **RAG** | Hybrid `vec0` + FTS5 retrieval, RRF-fused, ranked by confidence × source-tier × recency. |
-| **MCP server** | One stdio server, six tool namespaces (`kb`, `rag`, `research`, `playbook`, `goals`, `sources`). |
+| **MCP server** | One server (stdio or HTTP), seven tool namespaces (`kb`, `rag`, `research`, `playbook`, `goals`, `sources`, `session`). |
 | **Projector / Watcher** | Log → vault markdown, and vault edits → log. |
 | **Reactor** | Embed-on-ingest, staleness checks, near-dup post-check. |
 | **Poller + adapters** | `sitemap`, `github-repo`, `mediawiki-api`, `urls`. |
 | **Research** | Self-hosted SearXNG, cross-encoder rerank, arXiv fetcher. |
 | **Playbooks** | Jupyter (scratch) / Marimo (curated), run via `playbook.run`. |
-| **Daemons** | Four systemd user units + a daily-digest timer. |
+| **Daemons** | Four systemd user units + a daily-digest timer (plus an optional grounding daemon for ambient memory). |
 
-Full internals — component-by-component, the confidence model, and failure/recovery
-modes: **[docs/architecture.md](docs/architecture.md)**. Event taxonomy:
-[docs/event-log-schema.md](docs/event-log-schema.md). Tools:
-[docs/mcp-tool-reference.md](docs/mcp-tool-reference.md).
+Full internals — component-by-component, the confidence model, and
+failure/recovery modes — are in [docs/architecture.md](docs/architecture.md).
+
+## Requirements
+
+- **[uv](https://docs.astral.sh/uv/)** — builds the runtime venv and installs engram (no separate `pip install`).
+- **Python 3.11+**
+- **[Obsidian](https://obsidian.md/)** — the human surface for the vault (optional but recommended).
+- **CPU by default; GPU optional.** Embeddings run on CPU out of the box; the GPU lane is an install-time choice — see [docs/configuration.md](docs/configuration.md).
+
+Developed and run on Linux; macOS should work (SQLite + a uv venv). The native
+install uses systemd user units; the [Docker](#docker) path needs only Docker.
+
+## Quick start
+
+**1. Get the code.**
+
+```bash
+git clone https://github.com/nNemLab/engram.git && cd engram
+```
+
+**2. Initialize** (builds `~/.engram/.venv` and installs engram with the `[rag]`
+extra, then creates `~/.engram/{config.yml,.env,vault,db.sqlite}`).
+
+```bash
+./bin/eos-init
+```
+
+**3. Wire the MCP server into Claude Code.**
+
+```bash
+claude mcp add -s user engram ~/.engram/.venv/bin/engram-mcp
+```
+
+**4. Start the daemons** (systemd user units; copy them in first — see [docs/setup.md](docs/setup.md)).
+
+```bash
+systemctl --user enable --now \
+  engram-projector engram-watcher engram-reactor engram-poller engram-daily-digest.timer
+```
+
+**5. Verify.**
+
+```bash
+./bin/eos-status
+```
+
+Full setup, troubleshooting, and round-trip verification:
+[docs/setup.md](docs/setup.md). To start feeding it content, see
+[What you can curate](#what-you-can-curate).
+
+## Docker
+
+Prefer containers? One command brings up the full stack (MCP server + daemons +
+a private SearXNG):
+
+```bash
+docker compose -f docker/compose.yml up -d --build
+```
+
+Connect any MCP client over the HTTP transport:
+
+```bash
+claude mcp add --transport http engram http://localhost:8765/mcp
+```
+
+See **[docker/README.md](docker/README.md)** for setup, the loopback-only
+security note, and the provider-agnostic `ENGRAM_LLM_*` config.
+
+## Ambient memory
+
+For auto-injected retrieval on every turn — calibrated so it stays quiet when
+nothing relevant exists — run the grounding daemon (`engram-rag serve`) and
+enable the Claude Code plugin in `engram-plugin/`. The plugin injects relevant
+memory (`UserPromptSubmit`), primes each session (`SessionStart`), and records
+which entries were cited (`Stop`) so they rank higher next time.
+
+See **[engram-plugin/README.md](engram-plugin/README.md)** for install options
+and configuration.
+
+## What you can curate
+
+Anything text-shaped that you want an agent to remember and reason over. Content
+arrives three ways — you write it, the agent writes it, or a polled source feeds
+it — and all three land in the same gate.
+
+| You want to keep... | How |
+|---|---|
+| Your own notes, decisions, episodes | `kb.write`, or drop a markdown file into the vault inbox |
+| Docs sites that change over time | `sitemap` source (e.g. Docker, a framework's docs) |
+| Wikis | `mediawiki-api` source (Fandom game wikis, Wikipedia, PCGamingWiki, …) |
+| A GitHub repo's docs/code tree | `github-repo` source (tracks branch HEAD, incremental via compare API) |
+| Research papers | `research.fetch_arxiv` (abstracts + PDFs) |
+| One-off pages with no feed | `urls` source, or `research.ingest_url` |
+| Web-search findings | `research.search_web` via your local SearXNG, then ingest the keepers |
+
+A polled source is one declarative line. For example, track the Linux-relevant
+slice of Docker's docs, re-checked weekly:
+
+```bash
+./bin/eos-source add docker-docs-linux \
+  --name "Docker Docs (Linux)" --adapter sitemap \
+  --url https://docs.docker.com/sitemap.xml \
+  --include '*/engine/*' --include '*/desktop/install/linux*' \
+  --schedule 7d
+```
+
+The poller fetches on its tick, runs every candidate through the dedup gate, and
+chains revisions when a page changes (old version stays queryable, vault file
+updates in place). Per-source schedules, conditional GETs, and a circuit breaker
+keep it polite.
+
+## Documentation
+
+| Document | What's inside |
+|---|---|
+| [Setup](docs/setup.md) | Full install, running the daemons, verification, and troubleshooting. |
+| [Configuration](docs/configuration.md) | `config.yml` reference, the LLM provider, embedding/reranker models, and the CPU-vs-GPU lane. |
+| [Architecture](docs/architecture.md) | Component-by-component internals, the confidence model, and failure/recovery modes. |
+| [MCP tool reference](docs/mcp-tool-reference.md) | Every tool across the seven namespaces, with arguments. |
+| [Event log schema](docs/event-log-schema.md) | Event types, tables, and the invariants the log guarantees. |
+| [Docker](docker/README.md) | Container install, what's exposed, and the loopback-only security posture. |
+| [Ambient memory plugin](engram-plugin/README.md) | Plugin install options and grounding-daemon configuration. |
+| [Contributing](CONTRIBUTING.md) | Dev setup, running the tests, and the PR flow. |
+
+New to the project? Read [Setup](docs/setup.md) → [Configuration](docs/configuration.md)
+→ [Architecture](docs/architecture.md), then keep the
+[MCP tool reference](docs/mcp-tool-reference.md) handy.
 
 ## Configuration
 
@@ -209,6 +250,71 @@ All settings live in `~/.engram/config.yml` (secrets in `~/.engram/.env`),
 written by `bin/eos-init`. See **[docs/configuration.md](docs/configuration.md)**
 for the full reference — including the embedding/reranker model options and the
 CPU-vs-GPU lane choice.
+
+## Privacy & offline
+
+Engram is **online to gather, offline to use** — self-hosted, single-user, and
+free of telemetry.
+
+- **Online to gather.** The poller refreshes live sources, `research.search_web`
+  queries your SearXNG, and the arXiv/URL fetchers pull new material. Search goes
+  through your own SearXNG instance, so queries aren't handed to a third-party API.
+- **Offline to use.** Everything already curated is local — a SQLite database
+  plus a markdown vault. Query, read, and edit it with no network; embeddings run
+  on CPU locally, so retrieval works on a plane or an air-gapped box. The poller
+  pauses and resumes when connectivity returns; nothing else depends on the network.
+- **Auditable by construction.** The append-only log is a full audit trail —
+  every ingest, merge, supersede, retrieval, and human edit is an immutable,
+  timestamped row. Nothing mutates silently; superseded revisions stay queryable
+  rather than being deleted.
+- **Yours to correct.** The vault is plain markdown in Obsidian: human-readable,
+  greppable, diffable, git-able. The watcher makes your hand edits authoritative,
+  and there is no hidden agent-only memory — one gate for human and agent alike.
+
+## Uninstall
+
+```bash
+./bin/eos-uninstall
+```
+
+Removes the runtime (`~/.engram` — database, vault, venv — plus the systemd
+units and the Claude Code MCP registration). It first reports the database size
+and offers to export it to an `engram-export-<timestamp>.tar.gz`, then requires
+you to type `DELETE` to confirm. **Removal is permanent; unexported curated
+knowledge is lost for good.** The source checkout is left in place. It
+auto-detects whether you have a native or Docker install and handles both.
+
+## Contributing
+
+Contributions are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for dev
+setup, running the test suite, and the PR flow, and
+**[SECURITY.md](SECURITY.md)** for reporting vulnerabilities. Changes are tracked
+in [CHANGELOG.md](CHANGELOG.md).
+
+## FAQ
+
+**Is it multi-user?**
+No. Single-user by design — no auth and no concurrency model beyond SQLite's WAL.
+
+**Does my data leave my machine?**
+No. Engram is self-hosted with no cloud backend, no account, and no telemetry.
+Web search runs through your own SearXNG, and outbound fetches are SSRF-guarded.
+
+**Do I need a GPU?**
+No. Embeddings run on CPU by default. The GPU lane is an opt-in install choice,
+not a config flag — see [docs/configuration.md](docs/configuration.md).
+
+**Is it a vector database?**
+No. Retrieval is hybrid `sqlite-vec` + FTS5, RRF-fused and re-ranked. If you need
+a dedicated vector DB at scale, this is the wrong project.
+
+**Is it a Claude API wrapper?**
+No. Engram exposes tools to a kernel (Claude Code, or any MCP client). The kernel
+does the reasoning; engram is storage and retrieval.
+
+**Which clients work?**
+Any MCP-capable client. Claude Code is the primary target, over stdio (native) or
+the HTTP transport (Docker).
 
 ## License
 
