@@ -1,0 +1,79 @@
+import httpx
+
+from tests.rag import fresh_conn
+from tests.rag.test_query_calibrated import _add, _stub_cfg
+
+
+def _stub_retrieval(monkeypatch, hits):
+    import engram.rag.query as q
+    monkeypatch.setattr(q, "embed_one", lambda s: b"x")
+    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: hits)
+
+
+async def _client(app):
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://d")
+
+
+async def test_healthz_ok(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    from engram.rag.serve import build_serve_app
+    app = build_serve_app(fresh_conn(tmp_path))
+    async with await _client(app) as c:
+        r = await c.get("/healthz")
+    assert r.status_code == 200 and r.json()["status"] == "ok"
+
+
+async def test_grounding_endpoint_returns_verdict_and_block(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    conn = fresh_conn(tmp_path)
+    _add(conn, "h1", "Docker OOM", "flashinfer sm120 first start OOM guardrails MAX_JOBS")
+    _stub_retrieval(monkeypatch, [("h1", 0.91)])
+    from engram.rag.serve import build_serve_app
+    app = build_serve_app(conn)
+    async with await _client(app) as c:
+        r = await c.post("/grounding", json={"query": "flashinfer", "token_budget": 500})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["verdict"] == "STRONG"
+    assert "h1"[:12] in body["block"] and body["hashes"] == ["h1"]
+
+
+async def test_grounding_none_on_empty(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    conn = fresh_conn(tmp_path)
+    _stub_retrieval(monkeypatch, [])
+    from engram.rag.serve import build_serve_app
+    app = build_serve_app(conn)
+    async with await _client(app) as c:
+        r = await c.post("/grounding", json={"query": "nothing"})
+    assert r.json()["verdict"] == "NONE" and r.json()["block"] == ""
+
+
+async def test_prime_endpoint_returns_block(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    conn = fresh_conn(tmp_path)
+    conn.execute("INSERT INTO goals (id,text,status,priority,metadata,created_at,updated_at) "
+                 "VALUES ('g1','ship phase 2','active',5,'{}','2026-06-10T00:00:00Z','2026-06-10T00:00:00Z')")
+    from engram.rag.serve import build_serve_app
+    app = build_serve_app(conn)
+    async with await _client(app) as c:
+        r = await c.post("/prime", json={"cwd": "/x"})
+    assert r.status_code == 200 and "ship phase 2" in r.json()["block"]
+
+
+async def test_grounding_missing_query_is_400(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    from engram.rag.serve import build_serve_app
+    app = build_serve_app(fresh_conn(tmp_path))
+    async with await _client(app) as c:
+        r = await c.post("/grounding", json={"token_budget": 100})
+    assert r.status_code == 400
+
+
+async def test_prime_bad_token_budget_is_400(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    from engram.rag.serve import build_serve_app
+    app = build_serve_app(fresh_conn(tmp_path))
+    async with await _client(app) as c:
+        r = await c.post("/prime", json={"token_budget": "fast"})
+    assert r.status_code == 400
