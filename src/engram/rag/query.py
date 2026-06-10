@@ -19,6 +19,7 @@ class Hit:
     source_url: str | None
     confidence: float
     fetched_at: str | None
+    dense_sim: float | None = None
 
 
 def _vector_hits(conn: sqlite3.Connection, query_emb: bytes, k: int) -> list[tuple[str, float]]:
@@ -70,9 +71,12 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = N
     fetch_mult = 4 if (exclude_source_tiers or exclude_kinds) else 2
 
     rankings: list[list[tuple[str, float]]] = []
+    dense_map: dict[str, float] = {}
     try:
         q_emb = embed_one(query)
-        rankings.append(_vector_hits(conn, q_emb, k * fetch_mult))
+        dv = _vector_hits(conn, q_emb, k * fetch_mult)
+        dense_map = dict(dv)
+        rankings.append(dv)
     except Exception:
         # Embedding failure should not kill retrieval; fall back to BM25 only.
         pass
@@ -110,6 +114,7 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = N
         hits.append(Hit(
             hash=h, title=r["title"], body=r["body"], score=ranked_score,
             source_url=r["source_url"], confidence=r["confidence"], fetched_at=r["fetched_at"],
+            dense_sim=dense_map.get(h),
         ))
 
     hits.sort(key=lambda x: x.score, reverse=True)
