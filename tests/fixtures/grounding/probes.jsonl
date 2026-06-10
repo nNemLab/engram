@@ -1,0 +1,5 @@
+{"name": "bullseye", "top": 0.91, "second": 0.40, "expect": "STRONG"}
+{"name": "clear-but-crowded", "top": 0.66, "second": 0.64, "expect": "WEAK"}
+{"name": "mediocre", "top": 0.50, "second": 0.20, "expect": "WEAK"}
+{"name": "nothing", "top": 0.30, "second": 0.10, "expect": "NONE"}
+{"name": "empty", "top": null, "second": null, "expect": "NONE"}
