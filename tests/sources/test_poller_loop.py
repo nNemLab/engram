@@ -64,6 +64,13 @@ async def test_poll_one_runs_due_source_and_advances_state(conn, monkeypatch):
     rows = conn.execute("SELECT type FROM events WHERE type='ingested'").fetchall()
     assert len(rows) == 2
 
+    # source_id is threaded through dedup.gate at insert time (not patched in a
+    # post-hoc UPDATE), so every ingested content row carries it.
+    tagged = conn.execute(
+        "SELECT COUNT(*) AS c FROM content WHERE source_id = 's1'"
+    ).fetchone()
+    assert tagged["c"] == 2
+
     final = conn.execute("SELECT * FROM sources WHERE id='s1'").fetchone()
     assert final["last_polled_at"] is not None
     assert final["last_success_at"] is not None
