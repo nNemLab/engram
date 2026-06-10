@@ -21,3 +21,12 @@ def test_rag_cite_records_usage():
     rows = {r["content_hash"]: r["use_count"]
             for r in conn.execute("SELECT content_hash, use_count FROM content_usage")}
     assert rows == {"h1": 1, "h2": 1}
+
+
+def test_session_prime_returns_block():
+    from engram.mcp_server.tools.session import register
+    conn = _conn()
+    conn.execute("INSERT INTO goals (id,text,status,priority,metadata,created_at,updated_at) "
+                 "VALUES ('g1','ship docker','active',5,'{}','2026-06-09T00:00:00Z','2026-06-09T00:00:00Z')")
+    out = register(conn)["session.prime"]["handler"]({"cwd": "/x"})
+    assert "ship docker" in out["block"]
