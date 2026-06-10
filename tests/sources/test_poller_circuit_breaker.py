@@ -82,3 +82,30 @@ async def test_circuit_breaker_trips_only_at_threshold(
         payload = json.loads(broken[0]["payload"])
         assert payload["source_id"] == "s1"
         assert payload["error_count"] == start_error_count + 1
+
+
+@pytest.mark.asyncio
+async def test_circuit_breaker_does_not_re_emit_when_already_paused(conn, monkeypatch):
+    """A source that is already tripped (paused=1, count at/over threshold) and
+    fails again must keep counting but must NOT re-emit source_circuit_broken:
+    the event marks the 0->1 transition, not every failed poll while paused."""
+    from engram.poller.adapters import ADAPTERS
+    from engram.poller.poller import CIRCUIT_BREAK_THRESHOLD, poll_one
+
+    monkeypatch.setitem(ADAPTERS, "failing", FailingAdapter())
+    conn.execute(
+        "INSERT INTO sources (id, name, adapter, url, schedule, source_tier, error_count, paused) "
+        "VALUES ('s1', 'Flaky', 'failing', 'https://x', '1d', 'manual', ?, 1)",
+        (CIRCUIT_BREAK_THRESHOLD,),
+    )
+    src = dict(conn.execute("SELECT * FROM sources WHERE id='s1'").fetchone())
+
+    await poll_one(conn, src)
+
+    final = conn.execute("SELECT * FROM sources WHERE id='s1'").fetchone()
+    assert final["error_count"] == CIRCUIT_BREAK_THRESHOLD + 1  # still counts
+    assert final["paused"] == 1  # stays paused
+    broken = conn.execute(
+        "SELECT 1 FROM events WHERE type='source_circuit_broken'"
+    ).fetchall()
+    assert len(broken) == 0  # no re-emit on a poll of an already-paused source
