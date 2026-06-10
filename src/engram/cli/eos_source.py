@@ -45,7 +45,30 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--include", action="append")
     s.add_argument("--exclude", action="append")
 
+    h = sub.add_parser("health", help="per-source health table")
+    h.add_argument("id", nargs="?", help="optional: filter to one source")
+
     return p
+
+
+def _print_health_table(records: list[dict]) -> None:
+    if not records:
+        print("(no sources)")
+        return
+    header = (
+        f"{'STATUS':<8} {'ID':<24} {'LAST_SUCCESS':<22} "
+        f"{'ERR':>3} {'OVERDUE':<7} {'DUP':>5} {'CONTENT':>9}"
+    )
+    print(header)
+    for r in records:
+        content = f"{r['content_current']}/{r['content_total']}"
+        print(
+            f"{r['status']:<8} {r['id']:<24} "
+            f"{(r['last_success_at'] or '-'):<22} "
+            f"{r['error_count']:>3} "
+            f"{('yes' if r['overdue'] else 'no'):<7} "
+            f"{r['dup_ratio']:>5} {content:>9}"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -89,6 +112,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.exclude:
                 body["config"]["exclude"] = args.exclude
         out = tools["sources.set"]["handler"](body)
+    elif args.cmd == "health":
+        body = {"id": args.id} if args.id else {}
+        out = tools["sources.health"]["handler"](body)
+        _print_health_table(out["sources"])
+        return 0
     else:
         return 2
 
