@@ -124,6 +124,19 @@ ls ~/.engram/vault/050-kb/    # the projector should have rendered a file
 ./bin/eos-query "your query"   # RAG should return the new content
 ```
 
+## Uninstalling
+
+```bash
+./bin/eos-uninstall
+```
+
+Removes the runtime root (`~/.engram`, including the database, vault, and
+venv), the engram systemd user units, and the Claude Code MCP registration.
+Before anything is deleted it reports the database size and offers to export it
+to a `engram-export-<timestamp>.tar.gz` in the current directory, then requires
+you to type `DELETE` to confirm — removal is permanent and unexported curated
+knowledge is lost for good. The source checkout is left in place.
+
 ## Troubleshooting
 
 - **`engram-mcp` not found** — re-run `./bin/eos-init` to (re)build
