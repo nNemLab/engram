@@ -106,6 +106,7 @@ def gate(
     actor: str = "agent",
     correlation_id: str | None = None,
     embedding: bytes | None = None,
+    source_id: str | None = None,
 ) -> GateResult:
     """Single entry point for any content-write into the system.
 
@@ -132,7 +133,7 @@ def gate(
             insert_content(
                 conn, body=body, title=title, source_url=source_url,
                 source_tier=source_tier, confidence=confidence, ttl_days=ttl_days,
-                kind=kind, revision=new_revision, is_current=1, source_id=None,
+                kind=kind, revision=new_revision, is_current=1, source_id=source_id,
             )
             conn.execute(
                 "UPDATE content SET is_current = 0, superseded_by = ? WHERE hash = ?",
@@ -163,7 +164,7 @@ def gate(
 
     insert_content(
         conn, body=body, title=title, source_url=source_url, source_tier=source_tier,
-        confidence=confidence, ttl_days=ttl_days, kind=kind,
+        confidence=confidence, ttl_days=ttl_days, kind=kind, source_id=source_id,
     )
     event_log.append(
         conn, "ingested",

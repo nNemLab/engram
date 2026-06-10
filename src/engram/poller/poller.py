@@ -64,19 +64,11 @@ async def poll_one(conn: sqlite3.Connection, source: dict[str, Any]) -> dict[str
                 r = gate(
                     conn, body=cand.body, title=cand.title,
                     source_url=cand.source_url, source_tier=source["source_tier"],
-                    confidence=0.7, kind="research",
+                    confidence=0.7, kind="research", source_id=source["id"],
                 )
                 if r.outcome == "new":
-                    conn.execute(
-                        "UPDATE content SET source_id = ? WHERE hash = ?",
-                        (source["id"], r.hash),
-                    )
                     counts["ingested"] += 1
                 elif r.outcome == "superseded":
-                    conn.execute(
-                        "UPDATE content SET source_id = ? WHERE hash = ?",
-                        (source["id"], r.hash),
-                    )
                     counts["superseded"] += 1
                 elif r.outcome == "exact_dup":
                     counts["exact_dup"] += 1
