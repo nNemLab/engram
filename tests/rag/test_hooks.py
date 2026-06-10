@@ -155,6 +155,13 @@ def test_stop_fail_open_missing_transcript():
     assert r.returncode == 0 and json.loads(r.stdout) == {}
 
 
+def test_stop_fail_open_when_daemon_down_with_hashes(tmp_path):
+    # Hashes ARE present, but the daemon is unreachable — must still exit 0 / {}.
+    tpath = _write_transcript(tmp_path, "x _grounded in: [[n]] `[a1b2c3d4e5f6]`_")
+    r = _run_hook("stop.sh", json.dumps({"transcript_path": tpath}), "http://127.0.0.1:1")
+    assert r.returncode == 0 and json.loads(r.stdout) == {}
+
+
 def test_skill_present_and_covers_contract():
     skill = (PLUGIN / "skills" / "engram-memory" / "SKILL.md").read_text()
     assert skill.startswith("---")  # YAML frontmatter
