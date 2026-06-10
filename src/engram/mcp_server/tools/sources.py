@@ -6,6 +6,7 @@ import sqlite3
 from typing import Any
 
 from ...common.time import utcnow_iso
+from ...sources.health import source_health
 
 DEFAULT_SCHEDULE = {
     "sitemap":       "7d",
@@ -124,6 +125,13 @@ def register(conn: sqlite3.Connection) -> dict[str, dict]:
         conn.commit()
         return {"updated_fields": updated}
 
+    def health(args: dict[str, Any]) -> dict[str, Any]:
+        records = source_health(conn)
+        sid = args.get("id")
+        if sid:
+            records = [r for r in records if r["id"] == sid]
+        return {"sources": records}
+
     return {
         "sources.add": {
             "description": "Register a new polled source.",
@@ -191,5 +199,16 @@ def register(conn: sqlite3.Connection) -> dict[str, dict]:
                 },
             },
             "handler": set_,
+        },
+        "sources.health": {
+            "description": "Deterministic per-source health view (liveness, "
+                           "content counts, dup ratio, derived status). Read-only.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Optional: filter to one source."},
+                },
+            },
+            "handler": health,
         },
     }
