@@ -27,7 +27,7 @@ def _add(conn, h, title, body, *, tier="manual", conf=0.8):
         "confidence, kind, tombstoned) VALUES (?,?,?,?,?,?,?,?,0)",
         (h, title, body, None, tier, "2026-06-10T00:00:00Z", conf, "kb"),
     )
-    conn.execute("INSERT INTO content_fts (hash, body) VALUES (?, ?)", (h, body))
+    # Note: content_ai trigger already inserts into content_fts; no manual insert needed.
 
 
 def test_hit_carries_dense_sim(tmp_path, monkeypatch):
@@ -40,3 +40,19 @@ def test_hit_carries_dense_sim(tmp_path, monkeypatch):
     hits = q.hybrid_search(conn, "flashinfer oom", log_retrieval=False)
     assert hits and hits[0].hash == "h1"
     assert hits[0].dense_sim == pytest.approx(0.91)
+
+
+def test_citation_boosts_ranking(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    conn = fresh_conn(tmp_path)
+    _add(conn, "h1", "A", "alpha shared term", conf=0.8)
+    _add(conn, "h2", "B", "alpha shared term", conf=0.8)
+    import engram.rag.query as q
+    monkeypatch.setattr(q, "embed_one", lambda s: b"x")
+    # equal dense sim -> tie broken by usage
+    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [("h1", 0.80), ("h2", 0.80)])
+    from engram.rag.usage import record_cited
+    record_cited(conn, ["h2"], query="alpha")  # h2 has been useful
+    hits = q.hybrid_search(conn, "alpha", log_retrieval=False)
+    order = [h.hash for h in hits]
+    assert order.index("h2") < order.index("h1"), "cited h2 should rank above h1"

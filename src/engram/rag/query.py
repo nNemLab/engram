@@ -8,6 +8,7 @@ from datetime import UTC
 from .. import log as event_log
 from ..common.config import load_config
 from .embed import embed_one
+from .usage import usage_factor
 
 
 @dataclass
@@ -110,7 +111,8 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = N
             continue
         tier_w = weights.get(r["source_tier"] or "", 0.5)
         decay = _confidence_decay(r["fetched_at"], half_life)
-        ranked_score = rrf_score * (r["confidence"] or 0.5) * tier_w * decay
+        uf = usage_factor(conn, h, weight=cfg.grounding.usage_weight)
+        ranked_score = rrf_score * (r["confidence"] or 0.5) * tier_w * decay * uf
         hits.append(Hit(
             hash=h, title=r["title"], body=r["body"], score=ranked_score,
             source_url=r["source_url"], confidence=r["confidence"], fetched_at=r["fetched_at"],
