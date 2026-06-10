@@ -20,6 +20,9 @@ commands:
   query       RAG query (alias for: engram-rag query)
   source      Manage polled sources (alias for: engram-poller source ...)
   digest      Synthesize the last 24h of events into an episode
+  snapshot    Write a consistent backup of the event log (VACUUM INTO)
+  verify      Check the event log for corruption / broken invariants
+  restore     Restore the event log from a verified snapshot
   uninstall   Remove engram (optional DB export, then teardown)
 EOF
     exit 1

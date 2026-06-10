@@ -20,11 +20,12 @@ def conn(tmp_path, monkeypatch):
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA foreign_keys = ON")
     _apply(c)
+    # Patch where gate() looks the symbol up (engram.dedup.load_config), not
+    # where it's defined — robust even if dedup is imported before this runs.
     from types import SimpleNamespace
 
-    from engram.common import config as cfg_mod
     fake = SimpleNamespace(rag=SimpleNamespace(near_dup_threshold=0.92))
-    monkeypatch.setattr(cfg_mod, "load_config", lambda: fake)
+    monkeypatch.setattr("engram.dedup.load_config", lambda: fake)
     yield c
 
 
