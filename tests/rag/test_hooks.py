@@ -120,3 +120,27 @@ def test_session_start_quiet_on_empty(stub_daemon):
 def test_session_start_fail_open():
     r = _run_hook("session_start.sh", json.dumps({"cwd": "/x"}), "http://127.0.0.1:1")
     assert r.returncode == 0 and json.loads(r.stdout) == {}
+
+
+def test_stop_records_grounded_hashes(stub_daemon):
+    stub_daemon["routes"]["/cite"] = {"cited": 1}
+    msg = "Set MAX_JOBS=4.\n\n_grounded in: [[flashinfer note]] `[a1b2c3d4e5f6]`_"
+    r = _run_hook("stop.sh", json.dumps({"assistant_message": msg}), stub_daemon["url"])
+    assert r.returncode == 0 and json.loads(r.stdout) == {}
+    path, body = stub_daemon["received"][0]
+    assert path == "/cite"
+    sent = json.loads(body)
+    assert sent["hashes"] == ["a1b2c3d4e5f6"] and "turn_id" in sent
+
+
+def test_stop_noop_when_no_grounding(stub_daemon):
+    r = _run_hook("stop.sh", json.dumps({"assistant_message": "just chatting, no citations"}),
+                  stub_daemon["url"])
+    assert r.returncode == 0 and json.loads(r.stdout) == {}
+    assert stub_daemon["received"] == []
+
+
+def test_stop_fail_open():
+    msg = "x _grounded in: `[a1b2c3d4e5f6]`_"
+    r = _run_hook("stop.sh", json.dumps({"assistant_message": msg}), "http://127.0.0.1:1")
+    assert r.returncode == 0 and json.loads(r.stdout) == {}
