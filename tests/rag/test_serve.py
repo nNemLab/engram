@@ -136,3 +136,25 @@ async def test_prime_malformed_body_is_400(tmp_path, monkeypatch):
         r1 = await c.post("/prime", content=b"not json")      # malformed JSON
         r2 = await c.post("/prime", json=["not", "an", "object"])  # JSON array, not object
     assert r1.status_code == 400 and r2.status_code == 400
+
+
+async def test_cite_endpoint_records_usage(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    conn = fresh_conn(tmp_path)
+    from engram.rag.serve import build_serve_app
+    app = build_serve_app(conn)
+    async with await _client(app) as c:
+        r = await c.post("/cite", json={"hashes": ["a1b2c3", "d4e5f6"], "turn_id": "t1"})
+    assert r.status_code == 200 and r.json()["cited"] == 2
+    rows = {row["content_hash"]: row["use_count"]
+            for row in conn.execute("SELECT content_hash, use_count FROM content_usage")}
+    assert rows == {"a1b2c3": 1, "d4e5f6": 1}
+
+
+async def test_cite_endpoint_bad_body_is_400(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    from engram.rag.serve import build_serve_app
+    app = build_serve_app(fresh_conn(tmp_path))
+    async with await _client(app) as c:
+        r = await c.post("/cite", json={"hashes": "notalist"})
+    assert r.status_code == 400
