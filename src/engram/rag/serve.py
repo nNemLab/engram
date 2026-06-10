@@ -49,12 +49,16 @@ def build_serve_app(conn: sqlite3.Connection | None = None) -> Starlette:
         return JSONResponse(out)
 
     async def prime_(req: Request) -> JSONResponse:
-        body = await req.json()
         try:
+            body = await req.json()
             tb = int(body.get("token_budget", 1500))
-        except (TypeError, ValueError):
-            return JSONResponse({"error": "token_budget must be an integer"}, status_code=400)
-        out = await _run(prime, cwd=body.get("cwd"), token_budget=tb)
+            cwd = body.get("cwd")
+        except Exception:
+            return JSONResponse(
+                {"error": "invalid body (expected a JSON object; token_budget must be an integer)"},
+                status_code=400,
+            )
+        out = await _run(prime, cwd=cwd, token_budget=tb)
         return JSONResponse(out)
 
     @contextlib.asynccontextmanager

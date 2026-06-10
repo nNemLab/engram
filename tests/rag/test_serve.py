@@ -126,3 +126,13 @@ def test_compose_publishes_grounding_port():
     repo = Path(__file__).resolve().parents[2]
     compose = (repo / "docker" / "compose.yml").read_text()
     assert "127.0.0.1:8770:8770" in compose
+
+
+async def test_prime_malformed_body_is_400(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    from engram.rag.serve import build_serve_app
+    app = build_serve_app(fresh_conn(tmp_path))
+    async with await _client(app) as c:
+        r1 = await c.post("/prime", content=b"not json")      # malformed JSON
+        r2 = await c.post("/prime", json=["not", "an", "object"])  # JSON array, not object
+    assert r1.status_code == 400 and r2.status_code == 400
