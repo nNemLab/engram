@@ -111,3 +111,18 @@ def test_systemd_unit_exists_and_runs_serve():
     unit = (repo / "systemd" / "engram-rag.service").read_text()
     assert "engram-rag serve" in unit
     assert "ExecStart=" in unit and "%h/.engram/.venv/bin/engram-rag" in unit
+
+
+def test_docker_entrypoint_starts_grounding_daemon():
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[2]
+    ep = (repo / "docker" / "entrypoint.sh").read_text()
+    assert "engram-rag serve" in ep
+    assert "8770" in ep  # binds the grounding port
+
+
+def test_compose_publishes_grounding_port():
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[2]
+    compose = (repo / "docker" / "compose.yml").read_text()
+    assert "127.0.0.1:8770:8770" in compose

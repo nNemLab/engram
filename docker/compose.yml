@@ -14,6 +14,7 @@ services:
     # Do NOT publish to 0.0.0.0 / a LAN without an authenticating reverse proxy.
     ports:
       - "127.0.0.1:8765:8765"
+      - "127.0.0.1:8770:8770"
     volumes:
       - engram-data:/data
       - ${ENGRAM_VAULT:-./vault}:/data/vault
