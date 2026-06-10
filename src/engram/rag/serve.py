@@ -61,6 +61,32 @@ def build_serve_app(conn: sqlite3.Connection | None = None) -> Starlette:
         out = await _run(prime, cwd=cwd, token_budget=tb)
         return JSONResponse(out)
 
+    async def cite(req: Request) -> JSONResponse:
+        try:
+            body = await req.json()
+            hashes = body["hashes"]
+            if not isinstance(hashes, list) or not all(isinstance(h, str) for h in hashes):
+                raise ValueError
+        except Exception:
+            return JSONResponse({"error": "hashes (list of strings) required"}, status_code=400)
+
+        def _resolve_and_record(conn):
+            from .usage import record_cited
+            full = []
+            for h in hashes:
+                rows = conn.execute(
+                    "SELECT hash FROM content WHERE hash = ? OR hash LIKE ? || '%' LIMIT 2",
+                    (h, h),
+                ).fetchall()
+                if len(rows) == 1:
+                    full.append(rows[0]["hash"])
+            if not full:
+                return 0
+            return record_cited(conn, full, query=body.get("query", ""), turn_id=body.get("turn_id"))
+
+        n = await _run(_resolve_and_record)
+        return JSONResponse({"cited": n})
+
     @contextlib.asynccontextmanager
     async def lifespan(_app: Starlette) -> AsyncIterator[None]:
         if state["conn"] is None:
@@ -77,6 +103,7 @@ def build_serve_app(conn: sqlite3.Connection | None = None) -> Starlette:
             Route("/healthz", healthz, methods=["GET"]),
             Route("/grounding", grounding, methods=["POST"]),
             Route("/prime", prime_, methods=["POST"]),
+            Route("/cite", cite, methods=["POST"]),
         ],
         lifespan=lifespan,
     )

@@ -79,4 +79,6 @@ Next steps:
        ./bin/eos-projector
        ./bin/eos-watcher
        ./bin/eos-reactor
+  6. Optional — ambient memory (auto-inject retrieval each turn): run the grounding
+     daemon ('engram-rag serve') and enable the plugin (see engram-plugin/README.md).
 EOF

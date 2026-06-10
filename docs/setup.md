@@ -55,6 +55,12 @@ claude mcp list   # should show: engram: ... ✓ Connected
 Restart Claude Code. The `kb.*`, `rag.*`, `research.*`, `playbook.*`, `goals.*`,
 and `sources.*` tools should now appear (verify with `/mcp` inside a session).
 
+### 4a. Optional: enable ambient memory (auto-inject retrieval each turn)
+
+Start the grounding daemon (`engram-rag serve` or the `engram-rag` systemd unit),
+then enable the Claude Code plugin — see **[engram-plugin/README.md](../engram-plugin/README.md)**
+for install options (`--plugin-dir` for one session, or copy to `~/.claude/skills/` to persist).
+
 ### 5. Run the daemons
 
 Four long-running processes. Pick one:

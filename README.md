@@ -66,6 +66,12 @@ full stack (MCP server + daemons + a private SearXNG); connect any MCP client wi
 **[docker/README.md](docker/README.md)** for setup, the loopback-only security note,
 and the provider-agnostic `ENGRAM_LLM_*` config.
 
+## Ambient memory (Claude Code plugin)
+
+For auto-injected retrieval on every turn, run the grounding daemon
+(`engram-rag serve`) and enable the plugin at `engram-plugin/`. See
+**[engram-plugin/README.md](engram-plugin/README.md)** for install options and config.
+
 ## Uninstall
 
 ```bash
