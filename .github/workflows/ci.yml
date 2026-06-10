@@ -70,10 +70,10 @@ jobs:
       # tests/integration (end-to-end) is intentionally excluded until its
       # fixtures/mocks are wired up (see CI "Option B").
       #
-      # NOTE: `uv run` installs the project, which pulls torch via
-      # sentence-transformers — that's the bulk of the install and is cached by
-      # setup-uv across runs. To slim this, move sentence-transformers/torch into
-      # an optional `[rag]` extra so this job installs a lighter core.
+      # sentence-transformers (and its heavy torch dep) live in the optional
+      # `[rag]` extra, NOT core — and this step installs only `--extra dev`, so
+      # the suite installs torch-free. The tests stub embed_one/rerank, so the
+      # lazy sentence-transformers imports never fire.
       - name: Unit tests
         if: steps.filter.outputs.code == 'true'
         run: uv run --locked --python 3.11 --extra dev pytest tests/sources tests/research tests/mcp_server tests/common tests/rag -q

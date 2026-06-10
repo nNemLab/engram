@@ -51,8 +51,10 @@ if [[ ! -d "$venv" ]]; then
 else
     echo "  = $venv (kept existing)"
 fi
-uv pip install --python "$venv/bin/python" -e "$src"
-echo "  + engram installed (editable) into $venv"
+# Install with the [rag] extra so embeddings/rerank (sentence-transformers +
+# torch) are present — the reactor needs them. Core stays torch-free for CI.
+uv pip install --python "$venv/bin/python" -e "$src[rag]"
+echo "  + engram installed (editable, [rag]) into $venv"
 
 # Register the 'engram' Jupyter kernel the playbooks target (papermill resolves it
 # from the notebook kernelspec; without it, digest/playbook.run fail with NoSuchKernel).

@@ -4,7 +4,7 @@ ENV UV_LINK_MODE=copy HF_HOME=/opt/models
 RUN pip install --no-cache-dir uv
 WORKDIR /src
 COPY . /src
-RUN uv venv /opt/venv && uv pip install --python /opt/venv/bin/python .
+RUN uv venv /opt/venv && uv pip install --python /opt/venv/bin/python ".[rag]"
 # Bake the embedding + reranker models so first run is offline.
 RUN /opt/venv/bin/python - <<'PY'
 from sentence_transformers import SentenceTransformer, CrossEncoder

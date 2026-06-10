@@ -28,7 +28,7 @@ classifiers = [
 dependencies = [
     "mcp>=1.0.0",
     "sqlite-vec>=0.1.6",
-    "sentence-transformers>=3.0.0",
+    "numpy>=1.26",
     "watchdog>=4.0.0",
     "pyyaml>=6.0",
     "pydantic>=2.0",
@@ -47,6 +47,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Local embedding + rerank models. Pulls in sentence-transformers (and torch,
+# its heaviest transitive dep). Required for the reactor's embed-on-ingest and
+# research rerank — every real install (eos-init, Docker) installs `[rag]`.
+# Kept out of core so CI and tooling that stub embeddings install torch-free.
+rag = [
+    "sentence-transformers>=3.0.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
