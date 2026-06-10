@@ -8,7 +8,7 @@
 
 **A personal knowledge platform built around an append-only event log, projected into an Obsidian vault, accessed by agents over MCP.**
 
-> **Status:** `v0.1.0` — first public release. While on the `0.x` series, APIs, schema, and on-disk layout may change between minor versions without migration paths.
+> **Status:** `v0.2.0` — early development. While on the `0.x` series, APIs, schema, and on-disk layout may change between minor versions without migration paths.
 
 ---
 
