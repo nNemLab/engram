@@ -65,7 +65,8 @@ def _confidence_decay(fetched_at: str | None, half_life_days: int) -> float:
 def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = None,
                   log_retrieval: bool = True,
                   exclude_source_tiers: list[str] | None = None,
-                  exclude_kinds: list[str] | None = None) -> list[Hit]:
+                  exclude_kinds: list[str] | None = None,
+                  since: str | None = None, level: str = "snippet") -> list[Hit]:
     cfg = load_config()
     k = top_k or cfg.rag.top_k
     # Over-fetch when filtering so we can still return ~k hits after the cut.
@@ -109,6 +110,8 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = N
             continue
         if r["kind"] in excl_kinds:
             continue
+        if since and (r["fetched_at"] or "") < since:
+            continue
         tier_w = weights.get(r["source_tier"] or "", 0.5)
         decay = _confidence_decay(r["fetched_at"], half_life)
         uf = usage_factor(conn, h, weight=cfg.grounding.usage_weight)
@@ -121,6 +124,11 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = N
 
     hits.sort(key=lambda x: x.score, reverse=True)
     hits = hits[:k]
+    if level == "snippet":
+        for h in hits:
+            h.body = (h.body[:319] + "…") if len(h.body) > 320 else h.body
+    # level == "section"/"full": leave body as stored (section==full for now;
+    # true section extraction is a follow-up).
 
     if log_retrieval and hits:
         # One event per query, with the list of returned hashes.

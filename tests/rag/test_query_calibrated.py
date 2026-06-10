@@ -56,3 +56,30 @@ def test_citation_boosts_ranking(tmp_path, monkeypatch):
     hits = q.hybrid_search(conn, "alpha", log_retrieval=False)
     order = [h.hash for h in hits]
     assert order.index("h2") < order.index("h1"), "cited h2 should rank above h1"
+
+
+def test_since_filters_old_entries(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    conn = fresh_conn(tmp_path)
+    conn.execute("INSERT INTO content (hash,title,body,source_url,source_tier,fetched_at,"
+                 "confidence,kind,tombstoned) VALUES "
+                 "('old','Old','alpha term',NULL,'manual','2026-01-01T00:00:00Z',0.8,'kb',0)")
+    _add(conn, "new", "New", "alpha term")  # fetched_at 2026-06-10
+    import engram.rag.query as q
+    monkeypatch.setattr(q, "embed_one", lambda s: b"x")
+    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [("old", 0.80), ("new", 0.80)])
+    hits = q.hybrid_search(conn, "alpha", log_retrieval=False, since="2026-03-01T00:00:00Z")
+    assert [h.hash for h in hits] == ["new"]
+
+
+def test_level_controls_body_length(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    conn = fresh_conn(tmp_path)
+    _add(conn, "h1", "Big", "word " * 1000)
+    import engram.rag.query as q
+    monkeypatch.setattr(q, "embed_one", lambda s: b"x")
+    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [("h1", 0.80)])
+    snip = q.hybrid_search(conn, "word", log_retrieval=False, level="snippet")[0]
+    full = q.hybrid_search(conn, "word", log_retrieval=False, level="full")[0]
+    assert len(snip.body) < len(full.body)
+    assert len(snip.body) <= 320
