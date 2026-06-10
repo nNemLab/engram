@@ -1,0 +1,54 @@
+# Contributing to Engram
+
+Thanks for your interest in improving Engram. This is a solo-maintained,
+open-source project; contributions are welcome and reviewed on a best-effort
+basis.
+
+## Development setup
+
+Engram uses [uv](https://docs.astral.sh/uv/) for environment and dependency
+management. The `dev` optional-dependency group installs `pytest`,
+`pytest-asyncio`, and `ruff`.
+
+Run the lint and unit-test suite the same way CI does:
+
+```bash
+# Lint
+uv run --extra dev ruff check
+
+# Hermetic unit tests (sqlite + httpx.MockTransport — no network, no models)
+uv run --extra dev pytest tests/sources tests/research tests/mcp_server tests/common -q
+```
+
+CI pins Python 3.11 and runs against the committed `uv.lock`
+(`uv run --locked --python 3.11 --extra dev ...`); matching that locally is the
+safest way to reproduce a green build.
+
+## Tests
+
+This repository is test-driven. **New features and bug fixes should come with
+tests.** The hermetic suites (`tests/sources`, `tests/research`,
+`tests/mcp_server`, `tests/common`) run without network access, embedding
+models, or an LLM, and are what CI gates on — prefer adding coverage there so
+your change is verifiable on a hosted runner. (`tests/integration` is excluded
+from CI until its fixtures are wired.)
+
+## Code style
+
+Code is linted with [ruff](https://docs.astral.sh/ruff/). The configuration
+lives in `pyproject.toml` under `[tool.ruff]` (line length 110, target
+`py311`, rule set `E`/`F`/`W`/`I`/`UP`). Run `ruff check` before opening a PR;
+keep imports sorted (`I`) and avoid introducing new lint failures.
+
+## Opening a pull request
+
+1. Fork the repository and create a topic branch.
+2. Make your change with accompanying tests.
+3. Ensure `ruff check` and the hermetic test suites pass locally.
+4. Open a PR against `main` with a clear description of the change and its
+   motivation.
+
+## License
+
+Engram is licensed under [AGPL-3.0-or-later](LICENSE). By contributing, you
+agree that your contributions are licensed under the same terms.

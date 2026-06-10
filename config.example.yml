@@ -1,0 +1,95 @@
+# Engram configuration. Copy to ~/.engram/config.yml (or set ENGRAM_CONFIG).
+# All paths may be absolute or ~-expanded.
+
+paths:
+  # Runtime root. Holds db.sqlite, logs, and per-component state.
+  root: ~/.engram
+
+  # Obsidian vault — the human surface. Materialized view of the event log.
+  vault: ~/.engram/vault
+
+  # Playbook trees. `runs/` is the artifact directory (full notebooks live here).
+  playbooks_scratch:  ~/.engram/playbooks/scratch
+  playbooks_curated:  ~/.engram/playbooks/curated
+  playbooks_runs:     ~/.engram/playbooks/runs
+
+  # SQLite database (event log + content + indexes + vec0 + fts5).
+  db: ~/.engram/db.sqlite
+
+# RAG / embeddings.
+rag:
+  # 384-dim, lightweight, CPU-friendly. Override if you have GPU + want quality.
+  embed_model: sentence-transformers/all-MiniLM-L6-v2
+  embed_dim: 384
+
+  # Chunking. Sliding window fallback when no semantic boundary fits.
+  chunk_size_tokens: 512
+  chunk_overlap_tokens: 64
+
+  # Retrieval.
+  top_k: 12
+  rrf_k: 60                # RRF fusion constant
+  near_dup_threshold: 0.92 # cosine threshold for embedding-based dedup
+
+# Confidence ranking weights — soft prior, not ground truth. Keep the spread
+# narrow so a directly-relevant blog can outrank a tangentially-relevant paper.
+confidence:
+  source_tier_weights:
+    peer-reviewed: 0.85
+    vendor-doc:    0.80
+    manual:        0.70
+    agent-derived: 0.60
+    blog:          0.55
+    forum:         0.30
+  recency_half_life_days: 365   # exponential decay; topic-specific overrides via ttl_days on content
+
+# Vault projector.
+projector:
+  # How often to scan for pending log events to render. Reactor pushes events;
+  # this is a backstop polling cadence (seconds).
+  poll_interval: 5
+  # Subdirs by content kind.
+  kind_dirs:
+    kb:                050-kb
+    episode:           010-episodes
+    entity:            020-entities
+    research:          030-research
+    playbook-summary:  030-research/playbook-runs
+
+# Vault watcher (Obsidian → log sync-back).
+watcher:
+  # Debounce window for editor save bursts (ms).
+  debounce_ms: 800
+  # Ignore patterns relative to vault root.
+  ignore:
+    - .obsidian/**
+    - .trash/**
+    - "**/.DS_Store"
+
+# Reactor.
+reactor:
+  # Workers for embed-on-ingest. Each holds the embedding model in memory.
+  embed_workers: 1
+  # Mark content stale on retrieval if older than this fraction of ttl_days.
+  retrieval_staleness_threshold: 0.8
+
+# Playbooks.
+playbooks:
+  default_runtime: jupyter   # 'jupyter' | 'marimo'
+  jupyter:
+    kernel: python3
+  marimo:
+    headless: true
+
+# Research stack — self-hosted.
+research:
+  # SearXNG. Bring up via research/searxng/docker-compose.yml. Localhost-only.
+  searxng_url: "http://127.0.0.1:8888"
+  # Cross-encoder for relevance reranking (~80MB, sentence-transformers).
+  reranker_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+  # search_web: fetch this many candidates from SearXNG, return top web_default_k.
+  web_default_k: 8
+  web_max_candidates: 20
+  # arXiv vertical (no infra; uses arxiv.org public API).
+  arxiv_enabled: true
+  arxiv_default_k: 5

@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+exec "${ENGRAM_VENV:-$HOME/.engram/.venv}/bin/engram-projector" "$@"

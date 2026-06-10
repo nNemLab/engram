@@ -1,0 +1,9 @@
+{
+  "batchcomplete": "",
+  "query": {
+    "allpages": [
+      {"pageid": 3, "ns": 0, "title": "M1"},
+      {"pageid": 4, "ns": 0, "title": "M2"}
+    ]
+  }
+}

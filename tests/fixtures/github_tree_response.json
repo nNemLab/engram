@@ -1,0 +1,10 @@
+{
+  "sha": "head1",
+  "tree": [
+    {"path": "docs/engine/install.md", "type": "blob", "sha": "blob1"},
+    {"path": "docs/engine/upgrade.md", "type": "blob", "sha": "blob2"},
+    {"path": "docs/desktop/macos.md",  "type": "blob", "sha": "blob3"},
+    {"path": "README.md",              "type": "blob", "sha": "blob4"}
+  ],
+  "truncated": false
+}

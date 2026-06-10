@@ -1,0 +1,11 @@
+{
+  "batchcomplete": "",
+  "query": {
+    "recentchanges": [
+      {"type": "edit", "ns": 0, "title": "Engine", "pageid": 1, "revid": 100, "old_revid": 99, "timestamp": "2026-05-06T10:00:00Z"},
+      {"type": "new",  "ns": 0, "title": "Kestrel Mk II", "pageid": 99, "revid": 200, "old_revid": 0, "timestamp": "2026-05-06T11:00:00Z"},
+      {"type": "log",  "ns": 0, "title": "Engine", "logid": 5, "timestamp": "2026-05-06T12:00:00Z"},
+      {"type": "edit", "ns": 0, "title": "Engine", "pageid": 1, "revid": 101, "old_revid": 100, "timestamp": "2026-05-06T13:00:00Z"}
+    ]
+  }
+}

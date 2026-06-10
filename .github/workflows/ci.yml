@@ -1,0 +1,83 @@
+name: CI
+
+# Always triggers (no paths-ignore) so the "lint + unit tests" check ALWAYS
+# reports — required-branch-protection needs that, or doc-only PRs would be
+# blocked forever waiting on a check that never runs. Doc-only changes are
+# detected below and short-circuit to an instant pass instead of running the
+# full suite.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# setup-uv@v6 still bundles a Node 20 entrypoint; opt JS actions into Node 24
+# now (GitHub force-migrates on 2026-06-16 regardless). Clears the deprecation.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+# Cancel superseded runs on the same ref (e.g. force-pushes to a PR branch).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: lint + unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0          # need history to diff against the PR base
+
+      # Decide whether anything other than docs changed. If only **.md / docs/**
+      # changed, code=false and the heavy steps below are skipped — the job still
+      # completes successfully, satisfying the required check in ~10s.
+      - name: Detect non-doc changes
+        id: filter
+        run: |
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$base" ] || ! git rev-parse -q --verify "$base^{commit}" >/dev/null 2>&1; then
+            echo "base unknown — running full suite"
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed="$(git diff --name-only "$base" HEAD)"
+          echo "Changed files:"; printf '%s\n' "$changed"
+          if printf '%s\n' "$changed" | grep -qvE '(\.md$|^docs/)'; then
+            echo "code=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install uv
+        if: steps.filter.outputs.code == 'true'
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          # uv.lock is committed; key the cache on it so it invalidates on dep changes.
+          cache-dependency-glob: '**/uv.lock'
+
+      - name: Pin Python 3.11
+        if: steps.filter.outputs.code == 'true'
+        run: uv python install 3.11
+
+      - name: Ruff (lint)
+        if: steps.filter.outputs.code == 'true'
+        run: uv run --locked --python 3.11 --extra dev ruff check .
+
+      # tests/sources, tests/research, tests/mcp_server, tests/common are the
+      # hermetic unit suites: sqlite + httpx.MockTransport, no network, no
+      # embedding model, no LLM — safe on hosted runners.
+      # tests/integration (end-to-end) is intentionally excluded until its
+      # fixtures/mocks are wired up (see CI "Option B").
+      #
+      # NOTE: `uv run` installs the project, which pulls torch via
+      # sentence-transformers — that's the bulk of the install and is cached by
+      # setup-uv across runs. To slim this, move sentence-transformers/torch into
+      # an optional `[rag]` extra so this job installs a lighter core.
+      - name: Unit tests
+        if: steps.filter.outputs.code == 'true'
+        run: uv run --locked --python 3.11 --extra dev pytest tests/sources tests/research tests/mcp_server tests/common -q
+
+      - name: Doc-only change — suite skipped
+        if: steps.filter.outputs.code != 'true'
+        run: echo "Only docs changed; lint + unit tests skipped. Required check passes."

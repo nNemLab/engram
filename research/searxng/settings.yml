@@ -1,0 +1,63 @@
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: "engram-searxng"
+  privacypolicy_url: false
+  donation_url: false
+  contact_url: false
+
+server:
+  bind_address: "127.0.0.1"   # host network mode — never bind to 0.0.0.0
+  port: 8888
+  base_url: false
+  secret_key: "REPLACE_ME_WITH_RANDOM_HEX_64"   # see research/README.md
+  limiter: false                                # localhost-only; we trust ourselves
+  image_proxy: false
+  default_http_headers:
+    X-Content-Type-Options: nosniff
+    X-Download-Options: noopen
+    X-Robots-Tag: noindex, nofollow
+
+ui:
+  static_use_hash: true
+  query_in_title: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "auto"
+  formats:
+    - html
+    - json    # required for our client
+
+# Engines we actually want. Disable the noisy / dead ones.
+engines:
+  - name: google
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: duckduckgo
+    disabled: false
+  - name: brave
+    disabled: false
+  - name: wikipedia
+    disabled: false
+  - name: github
+    disabled: false
+  - name: arxiv
+    disabled: false
+  - name: stackoverflow
+    disabled: false
+  - name: hackernews
+    disabled: false
+
+  # Defaults that produce noise for technical research — turn off.
+  - name: bing images
+    disabled: true
+  - name: google images
+    disabled: true
+  - name: pinterest
+    disabled: true
+  - name: ahmia
+    disabled: true

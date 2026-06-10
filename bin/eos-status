@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Quick health snapshot. Reads counts from the DB and reports daemon cursors.
+set -euo pipefail
+
+"${ENGRAM_VENV:-$HOME/.engram/.venv}/bin/python" - <<'PY'
+from engram.common.db import connect
+
+with connect() as c:
+    def one(sql, *args):
+        row = c.execute(sql, args).fetchone()
+        return row[0] if row else 0
+
+    n_events = one("SELECT COUNT(*) FROM events")
+    n_content = one("SELECT COUNT(*) FROM content WHERE tombstoned = 0")
+    n_tombs = one("SELECT COUNT(*) FROM content WHERE tombstoned = 1")
+    n_emb = one("SELECT COUNT(*) FROM embeddings")
+    n_goals = one("SELECT COUNT(*) FROM goals WHERE status='active'")
+    n_contra = one("SELECT COUNT(*) FROM contradictions WHERE resolved=0")
+    n_vault = one("SELECT COUNT(*) FROM vault_state")
+
+    cursors = c.execute("SELECT name, last_event_id FROM daemon_cursors").fetchall() \
+        if c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='daemon_cursors'").fetchone() else []
+
+    print("Engram status")
+    print(f"  events        : {n_events}")
+    print(f"  content (live): {n_content}")
+    print(f"  content (tomb): {n_tombs}")
+    print(f"  embeddings    : {n_emb}")
+    print(f"  vault entries : {n_vault}")
+    print(f"  goals (active): {n_goals}")
+    print(f"  contradictions: {n_contra}")
+    print("  daemon cursors:")
+    for row in cursors:
+        print(f"    {row['name']:<12} -> event {row['last_event_id']}")
+PY

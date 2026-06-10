@@ -1,0 +1,28 @@
+version: 2
+updates:
+  # Keep GitHub Actions current — would have flagged the checkout@v4 / Node-20
+  # deprecation we hand-fixed instead of letting it rot. Grouped into one PR.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+
+  # Python dependencies. MUST be the `uv` ecosystem (not `pip`): it updates
+  # uv.lock alongside pyproject.toml, so `uv run --locked` in CI stays green.
+  # The `pip` ecosystem bumps pyproject only and breaks the locked install.
+  # Grouped into one PR to avoid a flood of individual update PRs.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      python:
+        patterns: ["*"]
+    commit-message:
+      prefix: deps

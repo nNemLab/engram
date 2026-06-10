@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Top-level dispatcher. `eos <subcommand>` routes to bin/eos-<subcommand>.
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+
+if [[ $# -lt 1 ]]; then
+    cat <<EOF
+eos — Engram control surface
+
+usage: eos <command> [args]
+
+commands:
+  init        First-time setup (db, vault, config)
+  mcp         Run the MCP server (stdio; meant for Claude Code to launch)
+  projector   Run the vault projection daemon
+  watcher     Run the vault watcher daemon
+  reactor     Run the event reactor
+  status      Show daemon health and counts
+  query       RAG query (alias for: engram-rag query)
+  source      Manage polled sources (alias for: engram-poller source ...)
+  digest      Synthesize the last 24h of events into an episode
+EOF
+    exit 1
+fi
+
+cmd="$1"; shift
+target="$here/eos-$cmd"
+if [[ ! -x "$target" ]]; then
+    echo "unknown command: $cmd" >&2
+    exit 2
+fi
+exec "$target" "$@"

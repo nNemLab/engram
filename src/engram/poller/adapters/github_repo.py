@@ -1,0 +1,168 @@
+"""GitHub-repo adapter: tracks a public repo by branch HEAD; uses the compare
+API for incremental updates after the first walk."""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+
+import httpx
+
+from . import Candidate, matches_globs, register
+
+logger = logging.getLogger("engram.poller.github_repo")
+
+_REPO_RE = re.compile(r"https?://github\.com/([^/]+)/([^/]+?)/?(?:$|\.git$)")
+
+_AUTH_SOURCE_LABEL = {
+    "env": "GITHUB_TOKEN env var",
+    "gh": "gh CLI keyring",
+    "none": "anonymous (60 req/hr)",
+}
+
+
+def _parse_repo(url: str) -> tuple[str, str]:
+    m = _REPO_RE.match(url)
+    if not m:
+        raise ValueError(f"not a github.com/<org>/<repo> URL: {url}")
+    return m.group(1), m.group(2)
+
+
+def _resolve_token() -> tuple[str | None, str]:
+    """Resolve a GitHub API token: GITHUB_TOKEN env -> gh keyring -> anonymous.
+
+    An explicit ``GITHUB_TOKEN`` wins so containers/CI can set it directly. When
+    absent (e.g. a host that keeps its token in the ``gh`` credential store
+    rather than the environment), fall back to ``gh auth token``. If neither is
+    available, return ``None`` and the adapter polls anonymously.
+
+    Returns ``(token, source)`` with ``source`` in {"env", "gh", "none"}.
+    """
+    env_token = os.environ.get("GITHUB_TOKEN")
+    if env_token:
+        return env_token, "env"
+
+    gh = shutil.which("gh")
+    if gh:
+        # Strip GH_TOKEN/GITHUB_TOKEN so gh reads its credential store (keyring)
+        # rather than echoing an env var back.
+        clean_env = {k: v for k, v in os.environ.items()
+                     if k not in ("GH_TOKEN", "GITHUB_TOKEN")}
+        try:
+            proc = subprocess.run(
+                [gh, "auth", "token"],
+                capture_output=True, text=True, timeout=5, env=clean_env,
+            )
+        except (OSError, subprocess.SubprocessError):
+            proc = None
+        if proc is not None and proc.returncode == 0:
+            tok = proc.stdout.strip()
+            if tok:
+                return tok, "gh"
+
+    return None, "none"
+
+
+class GitHubRepoAdapter:
+    name = "github-repo"
+
+    _API_BASE = "https://api.github.com"
+
+    def __init__(
+        self,
+        *,
+        _transport: httpx.AsyncBaseTransport | None = None,
+        user_agent: str = "engram/0.1 (+source-poller)",
+    ) -> None:
+        # Resolve the token lazily on first fetch: this adapter is instantiated
+        # at import time (self-registration), and token resolution may shell out
+        # to `gh`, which must not run during import/test collection.
+        self._transport = _transport
+        self._user_agent = user_agent
+        self._client: httpx.AsyncClient | None = None
+
+    def _ensure_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            token, source = _resolve_token()
+            logger.info("github-repo auth: %s", _AUTH_SOURCE_LABEL[source])
+            headers: dict[str, str] = {"user-agent": self._user_agent,
+                                        "accept": "application/vnd.github+json"}
+            if token:
+                headers["authorization"] = f"Bearer {token}"
+            kwargs: dict = dict(base_url=self._API_BASE, headers=headers, timeout=30.0)
+            if self._transport is not None:
+                kwargs["transport"] = self._transport
+            self._client = httpx.AsyncClient(**kwargs)
+        return self._client
+
+    async def fetch(self, source: dict) -> AsyncIterator[Candidate]:
+        self._ensure_client()
+        cfg = json.loads(source.get("config") or "{}")
+        include = cfg.get("include", [])
+        exclude = cfg.get("exclude", [])
+        branch = cfg.get("branch", "main")
+        cursor = json.loads(source.get("cursor") or "{}")
+        last_sha: str | None = cursor.get("last_sha")
+        owner, repo = _parse_repo(source["url"])
+
+        head_resp = await self._client.get(f"/repos/{owner}/{repo}/branches/{branch}")
+        head_resp.raise_for_status()
+        head_sha = head_resp.json()["commit"]["sha"]
+
+        if last_sha and last_sha != head_sha:
+            paths = await self._changed_paths(owner, repo, last_sha, head_sha)
+        elif last_sha == head_sha:
+            paths = []
+        else:
+            paths = await self._tree_paths(owner, repo, head_sha)
+
+        for path in paths:
+            if not matches_globs(path, include, exclude):
+                continue
+            body = await self._fetch_file(owner, repo, head_sha, path)
+            if body is None:
+                continue
+            url = f"https://github.com/{owner}/{repo}/blob/{head_sha}/{path}"
+            yield Candidate(
+                source_url=url,
+                body=body,
+                title=path.rsplit("/", 1)[-1],
+                fetched_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                metadata={"sha": head_sha, "path": path},
+            )
+
+        source["cursor"] = json.dumps({"last_sha": head_sha})
+
+    async def _tree_paths(self, owner: str, repo: str, sha: str) -> list[str]:
+        r = await self._client.get(f"/repos/{owner}/{repo}/git/trees/{sha}",
+                                    params={"recursive": "1"})
+        r.raise_for_status()
+        data = r.json()
+        return [t["path"] for t in data.get("tree", []) if t.get("type") == "blob"]
+
+    async def _changed_paths(self, owner: str, repo: str, base: str, head: str) -> list[str]:
+        r = await self._client.get(f"/repos/{owner}/{repo}/compare/{base}...{head}")
+        r.raise_for_status()
+        data = r.json()
+        return [
+            f["filename"] for f in data.get("files", [])
+            if f.get("status") in ("added", "modified", "renamed")
+        ]
+
+    async def _fetch_file(self, owner: str, repo: str, sha: str, path: str) -> str | None:
+        r = await self._client.get(
+            f"/repos/{owner}/{repo}/contents/{path}", params={"ref": sha},
+            headers={"accept": "application/vnd.github.v3.raw"},
+        )
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return r.text
+
+
+register(GitHubRepoAdapter())

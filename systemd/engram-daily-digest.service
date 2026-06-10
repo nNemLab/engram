@@ -1,0 +1,10 @@
+[Unit]
+Description=Engram daily digest (24h event log → episode in vault)
+After=network.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.engram/.env
+ExecStart=%h/engram/bin/eos-digest 24
+StandardOutput=journal
+StandardError=journal

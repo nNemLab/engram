@@ -1,0 +1,87 @@
+[project]
+name = "engram"
+version = "0.1.0"
+description = "Engram — Claude Code as kernel; event log canonical, Obsidian vault projected."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "AGPL-3.0-or-later"
+authors = [{ name = "NemLab" }]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "knowledge-base",
+    "rag",
+    "obsidian",
+    "claude",
+    "agent-memory",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = [
+    "mcp>=1.0.0",
+    "sqlite-vec>=0.1.6",
+    "sentence-transformers>=3.0.0",
+    "watchdog>=4.0.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+    "httpx>=0.27",
+    "papermill>=2.5",
+    "ipykernel>=6.29",
+    "marimo>=0.9",
+    "click>=8.1",
+    "rich>=13.0",
+    "trafilatura>=2.0",
+    "arxiv>=2.1",
+    "anthropic>=0.109.1",
+    "pymupdf>=1.24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+engram-mcp        = "engram.mcp_server.__main__:main"
+engram-projector  = "engram.projector.__main__:main"
+engram-watcher    = "engram.watcher.__main__:main"
+engram-reactor    = "engram.reactor.__main__:main"
+engram-rag        = "engram.rag.__main__:main"
+engram-poller     = "engram.poller.__main__:main"
+
+[project.urls]
+Homepage   = "https://github.com/nNemLab/engram"
+Repository = "https://github.com/nNemLab/engram"
+Issues     = "https://github.com/nNemLab/engram/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/engram"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+# Defaults are E/F only; add import-sorting (I), pycodestyle warnings (W), and
+# pyupgrade (UP). E501/line-length and `ruff format` are deferred to a dedicated
+# formatting PR (would reformat ~58 files); ignore E501 until then.
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

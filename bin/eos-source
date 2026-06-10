@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -e
+exec "${ENGRAM_VENV:-$HOME/.engram/.venv}/bin/python" -m engram.cli.eos_source "$@"
