@@ -138,17 +138,22 @@ async def test_prime_malformed_body_is_400(tmp_path, monkeypatch):
     assert r1.status_code == 400 and r2.status_code == 400
 
 
-async def test_cite_endpoint_records_usage(tmp_path, monkeypatch):
+async def test_cite_endpoint_resolves_prefix_to_full_hash(tmp_path, monkeypatch):
     _stub_cfg(monkeypatch)
     conn = fresh_conn(tmp_path)
+    full1 = "a1b2c3d4e5f6" + "0" * 52   # 64-char content hash
+    full2 = "d4e5f6a1b2c3" + "1" * 52
+    for h in (full1, full2):
+        conn.execute("INSERT INTO content (hash,title,body,source_url,source_tier,fetched_at,"
+                     "confidence,kind,tombstoned) VALUES (?,?,?,?,?,?,?,?,0)",
+                     (h, "t", "b", None, "manual", "2026-06-10T00:00:00Z", 0.8, "kb"))
     from engram.rag.serve import build_serve_app
     app = build_serve_app(conn)
     async with await _client(app) as c:
-        r = await c.post("/cite", json={"hashes": ["a1b2c3", "d4e5f6"], "turn_id": "t1"})
+        r = await c.post("/cite", json={"hashes": ["a1b2c3d4e5f6", "d4e5f6a1b2c3"], "turn_id": "t1"})
     assert r.status_code == 200 and r.json()["cited"] == 2
-    rows = {row["content_hash"]: row["use_count"]
-            for row in conn.execute("SELECT content_hash, use_count FROM content_usage")}
-    assert rows == {"a1b2c3": 1, "d4e5f6": 1}
+    recorded = {row["content_hash"] for row in conn.execute("SELECT content_hash FROM content_usage")}
+    assert recorded == {full1, full2}   # FULL hashes recorded, not the 12-char prefixes
 
 
 async def test_cite_endpoint_bad_body_is_400(tmp_path, monkeypatch):

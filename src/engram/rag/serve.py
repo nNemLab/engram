@@ -69,9 +69,22 @@ def build_serve_app(conn: sqlite3.Connection | None = None) -> Starlette:
                 raise ValueError
         except Exception:
             return JSONResponse({"error": "hashes (list of strings) required"}, status_code=400)
-        from .usage import record_cited
-        n = await _run(record_cited, hashes=hashes,
-                       query=body.get("query", ""), turn_id=body.get("turn_id"))
+
+        def _resolve_and_record(conn):
+            from .usage import record_cited
+            full = []
+            for h in hashes:
+                rows = conn.execute(
+                    "SELECT hash FROM content WHERE hash = ? OR hash LIKE ? || '%' LIMIT 2",
+                    (h, h),
+                ).fetchall()
+                if len(rows) == 1:
+                    full.append(rows[0]["hash"])
+            if not full:
+                return 0
+            return record_cited(conn, full, query=body.get("query", ""), turn_id=body.get("turn_id"))
+
+        n = await _run(_resolve_and_record)
         return JSONResponse({"cited": n})
 
     @contextlib.asynccontextmanager

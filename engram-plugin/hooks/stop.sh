@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
 # Stop: record the content hashes the agent grounded its answer in (the visible
-# `grounded in … [<hash12>]` markers), as a backstop usage signal. Fail-open.
-# Never injects context — always prints {}.
+# `grounded in … [<hash12>]` markers in its final message), as a backstop usage
+# signal. Reads the transcript (Claude Code Stop hooks provide transcript_path,
+# not the message text). Fail-open; never injects — always prints {}.
 set -uo pipefail
 URL="${ENGRAM_GROUNDING_URL:-http://127.0.0.1:8770}"
 input="$(cat)"
-msg="$(printf '%s' "$input" | jq -r '.assistant_message // empty' 2>/dev/null)"
+transcript="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null)"
+{ [ -z "$transcript" ] || [ ! -f "$transcript" ]; } && { echo '{}'; exit 0; }
+
+# Last assistant message's text blocks, joined.
+msg="$(jq -rs '
+  map(select(.type=="assistant")) | last
+  | if . == null then "" else ([(.message.content // [])[] | select(.type=="text") | .text] | join("\n")) end
+' "$transcript" 2>/dev/null)"
 [ -z "$msg" ] && { echo '{}'; exit 0; }
 
-# 12-hex-char content-hash tokens in brackets, e.g. [a1b2c3d4e5f6]
 hashes="$(printf '%s' "$msg" | grep -oE '\[[0-9a-f]{12}\]' | tr -d '[]' | sort -u)"
 [ -z "$hashes" ] && { echo '{}'; exit 0; }
 
