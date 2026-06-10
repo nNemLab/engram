@@ -11,6 +11,7 @@ from typing import Any
 from .. import log as event_log
 from ..common.config import load_config
 from ..common.db import get_connection
+from ..common.time import utcnow_iso
 from ..dedup import gate
 from .adapters import ADAPTERS
 from .schedule import parse_interval
@@ -20,16 +21,12 @@ logger = logging.getLogger("engram.poller")
 CIRCUIT_BREAK_THRESHOLD = 5
 
 
-def _utcnow_iso() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def select_due(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT * FROM sources "
         "WHERE paused = 0 "
         "  AND (next_poll_at IS NULL OR next_poll_at <= ?)",
-        (_utcnow_iso(),),
+        (utcnow_iso("s"),),
     ).fetchall()
 
 
@@ -97,13 +94,13 @@ async def poll_one(conn: sqlite3.Connection, source: dict[str, Any]) -> dict[str
         " updated_at = ? WHERE id = ?",
         (
             src_dict.get("cursor"),
-            _utcnow_iso(),
-            None if error_msg else _utcnow_iso(),
+            utcnow_iso("s"),
+            None if error_msg else utcnow_iso("s"),
             next_at,
             new_error_count,
             error_msg,
             paused,
-            _utcnow_iso(),
+            utcnow_iso("s"),
             source["id"],
         ),
     )
