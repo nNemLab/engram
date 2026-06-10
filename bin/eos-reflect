@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Deterministic reflection brief. Surfaces what needs attention:
+# unresolved contradictions, stale high-value entries, idle active goals.
+set -euo pipefail
+
+"${ENGRAM_VENV:-$HOME/.engram/.venv}/bin/python" - <<'PY'
+from engram.common.db import connect
+from engram.rag.reflect import reflect
+
+with connect() as c:
+    out = reflect(c)
+
+print("Engram reflection")
+print(f"  {out['brief']}")
+print()
+print(f"  unresolved contradictions : {out['unresolved_contradictions']['count']}")
+for r in out["unresolved_contradictions"]["sample"]:
+    print(f"    #{r['id']} {r['hash_a'][:12]} vs {r['hash_b'][:12]} "
+          f"({r['detected_by'] or '?'} @ {r['detected_at']})")
+print(f"  stale high-value entries  : {out['stale_high_value']['count']}")
+for r in out["stale_high_value"]["sample"]:
+    print(f"    [{r['hash'][:12]}] {r['title'] or '(untitled)'} "
+          f"stale={r['staleness_score']:.2f} conf={r['confidence']:.2f}")
+print(f"  idle active goals         : {out['idle_goals']['count']}")
+for r in out["idle_goals"]["sample"]:
+    print(f"    {r['id']}: {r['text']} (idle {r['days_idle']}d)")
+PY
