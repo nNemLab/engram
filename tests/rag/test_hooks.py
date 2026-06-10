@@ -144,3 +144,11 @@ def test_stop_fail_open():
     msg = "x _grounded in: `[a1b2c3d4e5f6]`_"
     r = _run_hook("stop.sh", json.dumps({"assistant_message": msg}), "http://127.0.0.1:1")
     assert r.returncode == 0 and json.loads(r.stdout) == {}
+
+
+def test_skill_present_and_covers_contract():
+    skill = (PLUGIN / "skills" / "engram-memory" / "SKILL.md").read_text()
+    assert skill.startswith("---")  # YAML frontmatter
+    low = skill.lower()
+    for token in ["grounded in", "rag.query", "kb.write", "none", "hash", "session.prime"]:
+        assert token in low, f"skill missing: {token}"
