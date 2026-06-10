@@ -124,6 +124,15 @@ ls ~/.engram/vault/050-kb/    # the projector should have rendered a file
 ./bin/eos-query "your query"   # RAG should return the new content
 ```
 
+## Docker install
+
+An alternative to the native setup above: `docker compose -f docker/compose.yml up -d --build`
+runs the whole stack (MCP HTTP server + daemons + a private SearXNG) in containers. The MCP
+server is reachable at `http://localhost:8765/mcp`; wire it with
+`claude mcp add --transport http engram http://localhost:8765/mcp`. The vault is a host
+bind-mount so you can still open it in Obsidian. Full instructions, exposure, and the
+loopback-only security note are in **[docker/README.md](../docker/README.md)**.
+
 ## Uninstalling
 
 ```bash
@@ -135,7 +144,8 @@ venv), the engram systemd user units, and the Claude Code MCP registration.
 Before anything is deleted it reports the database size and offers to export it
 to a `engram-export-<timestamp>.tar.gz` in the current directory, then requires
 you to type `DELETE` to confirm — removal is permanent and unexported curated
-knowledge is lost for good. The source checkout is left in place.
+knowledge is lost for good. The source checkout is left in place. The uninstaller
+auto-detects native *or* Docker installs (run `docker compose down -v` is handled for you).
 
 ## Troubleshooting
 

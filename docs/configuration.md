@@ -5,6 +5,19 @@ with `$ENGRAM_CONFIG`). Secrets live separately in `~/.engram/.env`. Both are
 written by `bin/eos-init` on first run from the templates
 [`config.example.yml`](../config.example.yml) and [`.env.example`](../.env.example).
 
+## LLM provider (optional)
+
+engram's core needs no LLM — the kernel reasons. Only the synthesis playbooks
+(research synthesis, daily digest) call one, and only when configured. Point them
+at any OpenAI-compatible endpoint via `~/.engram/.env`:
+
+- `ENGRAM_LLM_BASE_URL` — e.g. `https://api.openai.com/v1`, `http://localhost:1234/v1`
+  (LM Studio), or any vendor's OpenAI-compatible `/v1` base URL
+- `ENGRAM_LLM_API_KEY`
+- `ENGRAM_LLM_MODEL` — e.g. `gpt-4o-mini`
+
+With none set, synthesis falls back to structural (non-LLM) output.
+
 ## Common knobs
 
 | Key | Default | What it does |

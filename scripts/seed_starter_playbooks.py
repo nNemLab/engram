@@ -221,7 +221,7 @@ VAULT_AUDIT = [
 TOPIC_SYNTHESIS = [
     _md("# topic-synthesis\n"
         "\n"
-        "Run a RAG query, optionally synthesize via Claude, write the result back through the dedup gate\n"
+        "Run a RAG query, optionally synthesize via an LLM, write the result back through the dedup gate\n"
         "as a new `kind=kb` entry tagged `agent-derived`. Falls back to a structural concat if no API key.\n"),
     _code(
         '# parameters\n'
@@ -229,7 +229,7 @@ TOPIC_SYNTHESIS = [
         'top_k = 12\n'
         'output_title = None        # defaults to the query\n'
         'write_to_kb = True\n'
-        'model = "claude-haiku-4-5-20251001"\n'
+        'model = ""  # default LLM model; override via ENGRAM_LLM_MODEL or this param\n'
         'use_llm = True\n'
         '# Loop guard: by default, exclude prior agent-derived content (other syntheses)\n'
         '# from the retrieval pool. Set to [] to allow them.\n'
@@ -255,13 +255,15 @@ TOPIC_SYNTHESIS = [
         '    raise SystemExit("no hits — nothing to synthesize")\n'
     ),
     _code(
-        'api_key = os.environ.get("ENGRAM_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")\n'
+        'base_url = os.environ.get("ENGRAM_LLM_BASE_URL")\n'
+        'api_key = os.environ.get("ENGRAM_LLM_API_KEY")\n'
+        'llm_model = os.environ.get("ENGRAM_LLM_MODEL") or model\n'
         'synth = None\n'
         '\n'
-        'if use_llm and api_key:\n'
+        'if use_llm and base_url and api_key and llm_model:\n'
         '    try:\n'
-        '        from anthropic import Anthropic\n'
-        '        client = Anthropic(api_key=api_key)\n'
+        '        from openai import OpenAI\n'
+        '        client = OpenAI(base_url=base_url, api_key=api_key)\n'
         '        ctx = "\\n\\n".join(\n'
         '            f"[{i}] {h.title or \'(untitled)\'}\\n{h.body}"\n'
         '            for i, h in enumerate(hits, 1)\n'
@@ -271,11 +273,11 @@ TOPIC_SYNTHESIS = [
         '            f"Use ONLY the sources below. Cite as [N]. "\n'
         '            f"If the sources are insufficient, say so explicitly.\\n\\n{ctx}"\n'
         '        )\n'
-        '        msg = client.messages.create(\n'
-        '            model=model, max_tokens=2000,\n'
+        '        resp = client.chat.completions.create(\n'
+        '            model=llm_model, max_tokens=2000,\n'
         '            messages=[{"role": "user", "content": prompt}],\n'
         '        )\n'
-        '        synth = msg.content[0].text\n'
+        '        synth = resp.choices[0].message.content or ""\n'
         '        print(f"LLM synthesis: {len(synth)} chars")\n'
         '    except Exception as e:\n'
         '        print(f"LLM synthesis failed ({e}); using structural fallback")\n'
@@ -447,14 +449,14 @@ DAILY_DIGEST = [
     _md("# daily-digest\n"
         "\n"
         "Read N hours of events, build a structural summary, optionally rewrite as narrative\n"
-        "via Claude, write back as `kind=episode`. Lands in `vault/010-episodes/`.\n"
+        "via an LLM, write back as `kind=episode`. Lands in `vault/010-episodes/`.\n"
         "\n"
         "Designed to answer: *what happened in my knowledge system since I last looked?*\n"),
     _code(
         '# parameters\n'
         'window_hours = 24\n'
         'use_llm = True\n'
-        'model = "claude-haiku-4-5-20251001"\n'
+        'model = ""  # default LLM model; override via ENGRAM_LLM_MODEL or this param\n'
         'write_to_kb = True\n'
         'date_label = None         # e.g. "2026-05-06"; defaults to today\n'
         'max_per_section = 30\n',
@@ -724,13 +726,15 @@ DAILY_DIGEST = [
         'print(structural[:1200] + ("\\n...\\n[truncated for preview]" if len(structural) > 1200 else ""))\n'
     ),
     _code(
-        '# Optional Claude rewrite into a narrative summary.\n'
+        '# Optional LLM rewrite into a narrative summary (any OpenAI-compatible provider).\n'
         'narrative = None\n'
-        'api_key = os.environ.get("ENGRAM_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")\n'
-        'if use_llm and api_key and len(events) > 0:\n'
+        'base_url = os.environ.get("ENGRAM_LLM_BASE_URL")\n'
+        'api_key = os.environ.get("ENGRAM_LLM_API_KEY")\n'
+        'llm_model = os.environ.get("ENGRAM_LLM_MODEL") or model\n'
+        'if use_llm and base_url and api_key and llm_model and len(events) > 0:\n'
         '    try:\n'
-        '        from anthropic import Anthropic\n'
-        '        client = Anthropic(api_key=api_key)\n'
+        '        from openai import OpenAI\n'
+        '        client = OpenAI(base_url=base_url, api_key=api_key)\n'
         '        prompt = (\n'
         '            "You are writing a daily digest for a personal knowledge system. The structured\\n"\n'
         '            "summary below lists what happened in the last " + str(window_hours) + " hours.\\n\\n"\n'
@@ -742,16 +746,16 @@ DAILY_DIGEST = [
         '            "Rules: do not invent facts. If a section has no signal, omit it. Lean dry.\\n\\n"\n'
         '            "Structured summary:\\n\\n" + structural\n'
         '        )\n'
-        '        msg = client.messages.create(\n'
-        '            model=model, max_tokens=1500,\n'
+        '        resp = client.chat.completions.create(\n'
+        '            model=llm_model, max_tokens=1500,\n'
         '            messages=[{"role": "user", "content": prompt}],\n'
         '        )\n'
-        '        narrative = msg.content[0].text.strip()\n'
+        '        narrative = (resp.choices[0].message.content or "").strip()\n'
         '        print(f"narrative: {len(narrative)} chars")\n'
         '    except Exception as e:\n'
         '        print(f"LLM narrative failed ({e}); using structural only")\n'
         'else:\n'
-        '    print("LLM narrative skipped (use_llm or api_key)")\n'
+        '    print("LLM narrative skipped (need use_llm + ENGRAM_LLM_BASE_URL/API_KEY/MODEL)")\n'
     ),
     _code(
         '# Final body: narrative on top (if produced) + structural detail underneath.\n'

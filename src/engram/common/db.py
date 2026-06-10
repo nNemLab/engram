@@ -10,7 +10,12 @@ import sqlite_vec
 
 from .config import load_config
 
-SCHEMA_DIR = Path(__file__).resolve().parents[3] / "schema"
+# Schema ships inside the wheel at engram/schema (force-included in pyproject) for
+# non-editable installs (e.g. the Docker image); editable/dev installs fall back to
+# the repo-root schema/ dir.
+_PKG_SCHEMA = Path(__file__).resolve().parent.parent / "schema"
+_REPO_SCHEMA = Path(__file__).resolve().parents[3] / "schema"
+SCHEMA_DIR = _PKG_SCHEMA if _PKG_SCHEMA.exists() else _REPO_SCHEMA
 SCHEMA_PATH = SCHEMA_DIR / "001_initial.sql"
 
 

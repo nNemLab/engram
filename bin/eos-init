@@ -54,6 +54,11 @@ fi
 uv pip install --python "$venv/bin/python" -e "$src"
 echo "  + engram installed (editable) into $venv"
 
+# Register the 'engram' Jupyter kernel the playbooks target (papermill resolves it
+# from the notebook kernelspec; without it, digest/playbook.run fail with NoSuchKernel).
+"$venv/bin/python" -m ipykernel install --name engram --display-name Engram --prefix "$venv" >/dev/null
+echo "  + 'engram' Jupyter kernel registered"
+
 # Initialize DB. The python entry points apply schema on first connect.
 export ENGRAM_CONFIG="$root/config.yml"
 echo "==> Initializing database (applies schema, creates vec0 table)"
@@ -65,7 +70,7 @@ cat <<EOF
 
 Next steps:
   1. Edit $root/config.yml if you want different paths.
-  2. Edit $root/.env for API keys (e.g. ANTHROPIC_API_KEY).
+  2. Edit $root/.env for the LLM provider (ENGRAM_LLM_BASE_URL/API_KEY/MODEL) + source tokens.
   3. Open $root/vault in Obsidian; install Dataview + Templater plugins.
   4. Wire the MCP server into Claude Code:
        claude mcp add -s user engram $venv/bin/engram-mcp

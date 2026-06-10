@@ -1,0 +1,13 @@
+use_default_settings: true
+server:
+  secret_key: "REPLACE_ME_WITH_RANDOM_HEX_64"   # generate: openssl rand -hex 32
+  bind_address: "0.0.0.0"
+  port: 8080
+  # engram queries with a non-browser User-Agent over the internal network;
+  # the limiter/bot-detection would otherwise 429/403 those JSON requests.
+  limiter: false
+  public_instance: false
+search:
+  formats:
+    - html
+    - json
