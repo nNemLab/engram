@@ -96,6 +96,7 @@ async def poll_one(conn: sqlite3.Connection, source: dict[str, Any]) -> dict[str
     interval = parse_interval(source["schedule"])
     next_at = (datetime.now(UTC) + interval).strftime("%Y-%m-%dT%H:%M:%SZ")
     new_error_count = (source["error_count"] or 0) + 1 if error_msg else 0
+    was_paused = bool(source["paused"] or 0)
     paused = 1 if new_error_count >= CIRCUIT_BREAK_THRESHOLD else (source["paused"] or 0)
     conn.execute(
         "UPDATE sources SET cursor = ?, last_polled_at = ?, "
@@ -114,7 +115,9 @@ async def poll_one(conn: sqlite3.Connection, source: dict[str, Any]) -> dict[str
             source["id"],
         ),
     )
-    if paused == 1 and new_error_count >= CIRCUIT_BREAK_THRESHOLD:
+    # Emit only on the 0->1 transition; a re-poll of an already-tripped source
+    # must not re-fire the circuit-broken event.
+    if paused == 1 and not was_paused:
         event_log.append(
             conn, "source_circuit_broken",
             {"source_id": source["id"], "error_count": new_error_count},
