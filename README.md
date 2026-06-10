@@ -58,6 +58,18 @@ systemctl --user enable --now \
 
 Full setup, troubleshooting, and round-trip verification: [docs/setup.md](docs/setup.md).
 
+## Uninstall
+
+```bash
+./bin/eos-uninstall
+```
+
+Removes the runtime (`~/.engram` — database, vault, venv — plus the systemd
+units and the Claude Code MCP registration). It first reports the database size
+and offers to export it to a `engram-export-<timestamp>.tar.gz`, then requires
+you to type `DELETE` to confirm. **Removal is permanent; unexported curated
+knowledge is lost for good.** The source checkout is left in place.
+
 ## What you can curate
 
 Anything text-shaped that you want an agent to remember and reason over. Content
