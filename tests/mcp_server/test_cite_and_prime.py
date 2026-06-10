@@ -1,7 +1,29 @@
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture(autouse=True)
+def _engram_config(tmp_path, monkeypatch):
+    """Point ENGRAM_CONFIG at a throwaway config so handlers that call
+    load_config() (rag.query computes the verdict + ranks via it) work on a clean
+    machine / CI runner with no ~/.engram/config.yml. Only `paths:` is needed —
+    rag/grounding/confidence fall back to their dataclass defaults."""
+    cfg = tmp_path / "config.yml"
+    cfg.write_text(
+        "paths:\n"
+        f"  root: {tmp_path}\n  vault: {tmp_path}/vault\n"
+        f"  playbooks_scratch: {tmp_path}/ps\n  playbooks_curated: {tmp_path}/pc\n"
+        f"  playbooks_runs: {tmp_path}/pr\n  db: {tmp_path}/db.sqlite\n"
+    )
+    monkeypatch.setenv("ENGRAM_CONFIG", str(cfg))
+    from engram.common.config import load_config
+    load_config.cache_clear()
+    yield
+    load_config.cache_clear()
 
 
 def _conn():
