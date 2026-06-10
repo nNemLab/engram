@@ -61,6 +61,21 @@ async def test_prime_endpoint_returns_block(tmp_path, monkeypatch):
     assert r.status_code == 200 and "ship phase 2" in r.json()["block"]
 
 
+async def test_grounding_survives_special_chars(tmp_path, monkeypatch):
+    """A question-shaped prompt (trailing `?`) must return 200, not 500 (#63)."""
+    _stub_cfg(monkeypatch)
+    conn = fresh_conn(tmp_path)
+    _add(conn, "h1", "Dev instance", "engram dev instance runs on the CPU lane")
+    import engram.rag.query as q
+    monkeypatch.setattr(q, "embed_one", lambda s: b"x")
+    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [])
+    from engram.rag.serve import build_serve_app
+    app = build_serve_app(conn)
+    async with await _client(app) as c:
+        r = await c.post("/grounding", json={"query": "where does the engram dev instance run?"})
+    assert r.status_code == 200
+
+
 async def test_grounding_missing_query_is_400(tmp_path, monkeypatch):
     _stub_cfg(monkeypatch)
     from engram.rag.serve import build_serve_app
