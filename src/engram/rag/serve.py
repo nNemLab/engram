@@ -76,3 +76,13 @@ def build_serve_app(conn: sqlite3.Connection | None = None) -> Starlette:
         ],
         lifespan=lifespan,
     )
+
+
+def serve(host: str = "127.0.0.1", port: int | None = None) -> None:
+    """Run the grounding daemon (blocking). Loopback-only by default."""
+    import uvicorn
+
+    from ..common.config import load_config
+    if port is None:
+        port = load_config().grounding.port
+    uvicorn.run(build_serve_app(), host=host, port=port)

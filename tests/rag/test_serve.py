@@ -77,3 +77,29 @@ async def test_prime_bad_token_budget_is_400(tmp_path, monkeypatch):
     async with await _client(app) as c:
         r = await c.post("/prime", json={"token_budget": "fast"})
     assert r.status_code == 400
+
+
+def test_serve_uses_configured_port(monkeypatch):
+    """serve() resolves the port from grounding.port when not given, and runs uvicorn."""
+    import engram.rag.serve as serve_mod
+    captured = {}
+    monkeypatch.setattr(serve_mod, "build_serve_app", lambda: "APP")
+
+    def fake_run(app, host, port):
+        captured.update(app=app, host=host, port=port)
+
+    from types import SimpleNamespace
+
+    import uvicorn
+
+    from engram.common import config as cfgmod
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    monkeypatch.setattr(cfgmod, "load_config",
+                        lambda *a, **k: SimpleNamespace(grounding=SimpleNamespace(port=8770)))
+    serve_mod.serve()
+    assert captured == {"app": "APP", "host": "127.0.0.1", "port": 8770}
+
+
+def test_cli_has_serve_command():
+    from engram.rag.__main__ import cli
+    assert "serve" in cli.commands

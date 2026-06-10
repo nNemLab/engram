@@ -36,6 +36,15 @@ def query(query: str, top_k: int | None) -> None:
     console.print(t)
 
 
+@cli.command()
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", type=int, default=None, help="default: grounding.port from config")
+def serve(host: str, port: int | None) -> None:
+    """Run the warm grounding daemon (/grounding, /prime, /healthz)."""
+    from .serve import serve as run_serve
+    run_serve(host=host, port=port)
+
+
 def main() -> None:
     cli()
 
