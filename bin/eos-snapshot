@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Write a consistent (WAL-safe) backup of the canonical event log via VACUUM
+# INTO. The resulting file is self-contained — events, content, FTS index,
+# embeddings, vault_state and all derived tables — so it is "the only thing you
+# have to back up". The vault markdown rebuilds from it.
+#
+# usage: eos snapshot [OUT_PATH]
+#   OUT_PATH  destination file (default: ./engram-snapshot-<UTC-timestamp>.sqlite)
+set -euo pipefail
+
+out="${1:-}"
+
+ENGRAM_OUT="$out" "${ENGRAM_VENV:-$HOME/.engram/.venv}/bin/python" - <<'PY'
+import os
+from datetime import UTC, datetime
+from pathlib import Path
+
+from engram import maintenance
+from engram.common.config import load_config
+
+out = os.environ.get("ENGRAM_OUT") or ""
+if not out:
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    out = f"engram-snapshot-{ts}.sqlite"
+out_path = Path(out).resolve()
+
+db_path = load_config().db_path
+result = maintenance.snapshot(db_path, out_path)
+
+size = result["size_bytes"]
+for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+    if size < 1024 or unit == "TiB":
+        human = f"{size:.1f} {unit}" if unit != "B" else f"{size} B"
+        break
+    size /= 1024
+
+print("Engram snapshot written")
+print(f"  from   : {db_path}")
+print(f"  path   : {result['path']}")
+print(f"  size   : {human}")
+print(f"  events : {result['event_count']}")
+print(f"  content: {result['content_count']} (incl. tombstoned)")
+PY

@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Restore the canonical event log from a snapshot produced by `eos snapshot`.
+#
+# The snapshot is verified BEFORE anything is swapped — a snapshot that fails
+# integrity is refused. The current database is backed up to a timestamped
+# sidecar before being overwritten. The vault markdown files are NOT touched;
+# the projector reconciles them forward from the restored DB's vault_state.
+#
+# Gated behind a typed confirmation (type RESTORE); there is no --yes flag.
+#
+# usage: eos restore SNAPSHOT_PATH
+set -euo pipefail
+
+snapshot="${1:-}"
+if [[ -z "$snapshot" ]]; then
+    echo "usage: eos restore SNAPSHOT_PATH" >&2
+    exit 2
+fi
+if [[ ! -f "$snapshot" ]]; then
+    echo "error: snapshot not found: $snapshot" >&2
+    exit 2
+fi
+
+venv="${ENGRAM_VENV:-$HOME/.engram/.venv}/bin/python"
+
+# --- Resolve the live DB path and pre-flight verify the snapshot -------------
+db_path="$(ENGRAM_SNAPSHOT="$snapshot" "$venv" - <<'PY'
+import os, sys
+from engram import maintenance
+from engram.common.config import load_config
+
+db_path = load_config().db_path
+report = maintenance.verify(os.environ["ENGRAM_SNAPSHOT"])
+if not report["ok"]:
+    failed = [c["name"] for c in report["checks"] if not c["ok"]]
+    print(f"error: snapshot failed verification (failed: {failed}, "
+          f"{len(report['hash_mismatches'])} hash mismatch(es)) — refusing to restore.",
+          file=sys.stderr)
+    sys.exit(1)
+print(db_path)
+PY
+)"
+
+echo "==> Engram restore"
+echo "    snapshot : $snapshot (verified OK)"
+echo "    target   : $db_path"
+echo
+echo "This will:"
+echo "  1. back up the current database to <db>.pre-restore-<timestamp>"
+echo "  2. replace it with the snapshot contents"
+echo "  3. remove stale -wal/-shm sidecars so the restored file is authoritative"
+echo
+echo "The vault markdown is NOT modified — the projector reconciles it forward"
+echo "from the restored database."
+echo
+read -r -p "Type 'RESTORE' to proceed (anything else aborts): " confirm || confirm=""
+if [[ "$confirm" != "RESTORE" ]]; then
+    echo "Aborted. Nothing was changed."
+    exit 1
+fi
+
+ENGRAM_SNAPSHOT="$snapshot" "$venv" - <<'PY'
+import os
+from engram import maintenance
+from engram.common.config import load_config
+
+db_path = load_config().db_path
+result = maintenance.restore(os.environ["ENGRAM_SNAPSHOT"], db_path)
+print()
+print("==> Restore complete")
+print(f"    restored from : {result['restored_from']}")
+print(f"    database      : {result['db_path']}")
+prev = result["previous_backup"]
+if prev is not None:
+    print(f"    previous DB   : backed up to {prev}")
+else:
+    print("    previous DB   : none (no database existed at the target)")
+print()
+print("Next: start the projector so the vault reconciles forward from the")
+print("restored vault_state (e.g. `eos projector` / its systemd unit).")
+PY
