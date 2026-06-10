@@ -19,7 +19,7 @@ dependencies = [
     "rich>=13.0",
     "trafilatura>=2.0",
     "arxiv>=2.1",
-    "anthropic>=0.40",
+    "anthropic>=0.109.1",
     "pymupdf>=1.24",
 ]
 
