@@ -57,3 +57,19 @@ def pack(hits: list[Any], token_budget: int) -> dict[str, Any]:
         used += cost
         chosen.append(h.hash)
     return {"block": "\n".join(lines), "hashes": chosen}
+
+
+def ground(conn, query: str, *, token_budget: int | None = None) -> dict[str, Any]:
+    """One call for the hook/daemon: retrieve -> classify -> pack. Never logs a
+    `retrieved` event on NONE (keeps the log clean on irrelevant turns)."""
+    from ..common.config import load_config
+    from .query import hybrid_search
+    cfg = load_config()
+    budget = token_budget or cfg.grounding.token_budget
+    hits = hybrid_search(conn, query, log_retrieval=False)
+    verdict = classify(hits, cfg.grounding)
+    if verdict == "NONE":
+        return {"verdict": "NONE", "block": "", "hashes": [], "hits": []}
+    packed = pack(hits, budget)
+    return {"verdict": verdict, "block": packed["block"], "hashes": packed["hashes"],
+            "hits": [{"hash": h.hash, "title": h.title, "score": round(h.score, 4)} for h in hits]}
