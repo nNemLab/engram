@@ -103,3 +103,11 @@ def test_serve_uses_configured_port(monkeypatch):
 def test_cli_has_serve_command():
     from engram.rag.__main__ import cli
     assert "serve" in cli.commands
+
+
+def test_systemd_unit_exists_and_runs_serve():
+    from pathlib import Path
+    repo = Path(__file__).resolve().parents[2]
+    unit = (repo / "systemd" / "engram-rag.service").read_text()
+    assert "engram-rag serve" in unit
+    assert "ExecStart=" in unit and "%h/.engram/.venv/bin/engram-rag" in unit

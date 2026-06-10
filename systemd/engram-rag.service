@@ -1,0 +1,16 @@
+[Unit]
+Description=Engram grounding daemon (warm retrieval for the ambient hook)
+After=network.target
+
+[Service]
+Type=simple
+Environment=ENGRAM_CONFIG=%h/.engram/config.yml
+EnvironmentFile=-%h/.engram/.env
+ExecStart=%h/.engram/.venv/bin/engram-rag serve
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
