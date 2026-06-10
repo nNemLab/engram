@@ -17,6 +17,7 @@ commands:
   watcher     Run the vault watcher daemon
   reactor     Run the event reactor
   status      Show daemon health and counts
+  version     Show engram + database schema/version compatibility
   query       RAG query (alias for: engram-rag query)
   source      Manage polled sources (alias for: engram-poller source ...)
   digest      Synthesize the last 24h of events into an episode
