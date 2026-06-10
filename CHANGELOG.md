@@ -14,12 +14,10 @@ v0.3.0 were authored by hand.
 ### Features
 
 * **db:** schema/embedding-dimension compatibility guard + eos-version ([83079bd](https://github.com/nNemLab/engram/commit/83079bd91f48252ca47ce92dc7a6248b9ae58d2f))
-* schema + embedding-dimension compatibility guard, eos-version ([ad6840d](https://github.com/nNemLab/engram/commit/ad6840d1d5a6d004b2874deca11490fd361f1c10))
 
 
 ### Documentation
 
-* restructure README + add documentation index ([85b1ee7](https://github.com/nNemLab/engram/commit/85b1ee75450098441d643cdbe69582f93e734957))
 * restructure README + add documentation index ([fb4322e](https://github.com/nNemLab/engram/commit/fb4322e497e5cf060ec7140b710e1be1f1cf3fc5))
 
 ## [0.2.0] - 2026-06-10
