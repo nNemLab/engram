@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# Uninstall engram: optionally export the curated database, then remove the
+# runtime root, systemd user units, and the Claude Code MCP registration.
+#
+# The source checkout (the code) is intentionally left in place — this script
+# lives inside it. Removal is gated behind a typed confirmation and cannot be
+# bypassed; there is no --yes flag by design.
+set -euo pipefail
+
+root="${ENGRAM_ROOT:-$HOME/.engram}"
+venv="${ENGRAM_VENV:-$root/.venv}"
+src="$(cd "$(dirname "$0")/.." && pwd)"
+
+usage() {
+    cat <<EOF
+eos uninstall — remove engram (with optional database export)
+
+Removes the runtime root ($root), the engram systemd user units, and the
+Claude Code MCP registration. Offers to export the curated database first.
+
+The source checkout at $src is NOT removed.
+
+usage: eos uninstall [-h|--help]
+
+Environment:
+  ENGRAM_ROOT   runtime root to remove   (default: ~/.engram)
+  ENGRAM_VENV   venv to remove if set outside the root
+EOF
+}
+
+case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+    "") ;;
+    *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
+esac
+
+# --- Resolve the database path -----------------------------------------------
+# Honor a custom paths.db in config.yml; fall back to the documented default.
+# Dependency-free parse: first `db:` key under the paths block, ~ / $HOME
+# expanded. The venv is not consulted (it is about to be deleted).
+resolve_db_path() {
+    local cfg="$root/config.yml" line val
+    if [[ -f "$cfg" ]]; then
+        line="$(grep -E '^[[:space:]]+db:[[:space:]]*' "$cfg" | head -n1 || true)"
+        if [[ -n "$line" ]]; then
+            val="${line#*db:}"
+            val="${val%%#*}"                       # strip inline comment
+            val="$(echo "$val" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^["'\'']//' -e 's/["'\'']$//')"
+            case "$val" in
+                "~")   val="$HOME" ;;
+                "~/"*) val="$HOME/${val#\~/}" ;;
+            esac
+            [[ -n "$val" ]] && { printf '%s\n' "$val"; return; }
+        fi
+    fi
+    printf '%s\n' "$root/db.sqlite"
+}
+db_path="$(resolve_db_path)"
+
+# --- Detect what is present --------------------------------------------------
+units=(engram-projector engram-watcher engram-reactor engram-poller \
+       engram-daily-digest.timer engram-daily-digest.service)
+unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+
+have_root=false;  [[ -e "$root" ]] && have_root=true
+have_units=false; compgen -G "$unit_dir/engram-*" >/dev/null 2>&1 && have_units=true
+have_mcp=false
+if command -v claude >/dev/null 2>&1 && claude mcp list 2>/dev/null | grep -qiE '(^|[^[:alnum:]])engram([^[:alnum:]]|$)'; then
+    have_mcp=true
+fi
+
+if ! $have_root && ! $have_units && ! $have_mcp; then
+    echo "engram does not appear to be installed (nothing at $root, no units, no MCP registration)."
+    exit 0
+fi
+
+echo "==> Engram uninstall"
+echo "    root:  $root $($have_root && echo '(present)' || echo '(absent)')"
+echo "    units: $($have_units && echo 'present' || echo 'absent')"
+echo "    mcp:   $($have_mcp && echo 'registered' || echo 'absent')"
+echo
+
+# --- Offer to export the curated database ------------------------------------
+exported_to=""
+if [[ -f "$db_path" ]]; then
+    size="$(du -h "$db_path" | cut -f1)"
+    echo "Curated database: $db_path ($size)"
+    echo "This is your canonical knowledge — the vault and indexes rebuild from it."
+    read -r -p "Export it to a tarball before removal? [Y/n] " ans || ans=""
+    case "$ans" in
+        [Nn]|[Nn][Oo])
+            echo "  Skipping export." ;;
+        *)
+            ts="$(date +%Y%m%d-%H%M%S)"
+            out="$PWD/engram-export-$ts.tar.gz"
+            tar -czf "$out" -C "$(dirname "$db_path")" "$(basename "$db_path")"
+            # Verify the archive is non-empty and actually contains the db.
+            if [[ ! -s "$out" ]] || ! tar -tzf "$out" | grep -q "$(basename "$db_path")"; then
+                echo "error: export verification failed for $out — aborting, nothing removed." >&2
+                exit 1
+            fi
+            bytes="$(wc -c < "$out" | tr -d '[:space:]')"
+            exported_to="$out"
+            echo "  + Exported $bytes bytes to $out"
+            ;;
+    esac
+    echo
+else
+    echo "No database found at $db_path — nothing to export."
+    echo
+fi
+
+# --- Final, irreversible confirmation ----------------------------------------
+echo "The following will be PERMANENTLY removed:"
+$have_units && echo "  - systemd user units: ${units[*]}"
+$have_mcp   && echo "  - Claude Code MCP registration: engram"
+$have_root  && echo "  - runtime root (db, vault, venv, playbooks): $root"
+echo
+if [[ -n "$exported_to" ]]; then
+    echo "Your database was exported to: $exported_to"
+    echo "Everything else below is gone for good once you confirm."
+else
+    echo "!! No export was taken. ALL curated knowledge will be lost PERMANENTLY."
+    echo "!! This cannot be undone."
+fi
+echo
+read -r -p "Type 'DELETE' to permanently remove engram (anything else aborts): " confirm || confirm=""
+if [[ "$confirm" != "DELETE" ]]; then
+    echo "Aborted. Nothing was removed."
+    exit 1
+fi
+
+# --- Teardown ----------------------------------------------------------------
+echo
+echo "==> Removing engram"
+
+if $have_units && command -v systemctl >/dev/null 2>&1; then
+    systemctl --user disable --now "${units[@]}" >/dev/null 2>&1 || true
+    rm -f "$unit_dir"/engram-*.service "$unit_dir"/engram-*.timer
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+    echo "  - systemd user units removed"
+fi
+
+if $have_mcp && command -v claude >/dev/null 2>&1; then
+    claude mcp remove engram -s user >/dev/null 2>&1 \
+        || claude mcp remove engram >/dev/null 2>&1 || true
+    echo "  - MCP registration removed"
+fi
+
+if $have_root; then
+    rm -rf "$root"
+    echo "  - runtime root removed: $root"
+fi
+# venv configured outside the root (rare) — clean it up too.
+if [[ "$venv" != "$root"/* && -e "$venv" ]]; then
+    rm -rf "$venv"
+    echo "  - venv removed: $venv"
+fi
+
+echo
+echo "==> engram runtime removed."
+if [[ -n "$exported_to" ]]; then
+    echo "    Your export: $exported_to"
+fi
+echo "    The source checkout was left in place. Remove it with:"
+echo "      rm -rf $src"
