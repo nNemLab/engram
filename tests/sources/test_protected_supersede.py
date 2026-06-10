@@ -75,3 +75,90 @@ def test_watcher_human_edit_sets_protected(conn, tmp_path, monkeypatch):
     # vault_edit event still recorded.
     n = conn.execute("SELECT COUNT(*) FROM events WHERE type = 'vault_edit'").fetchone()[0]
     assert n == 1
+
+
+def _live_sourced(conn, *, body, source_url, protected):
+    from engram.dedup import content_hash
+    h = content_hash(body)
+    conn.execute(
+        "INSERT INTO content (hash, body, source_url, source_tier, confidence, "
+        "kind, revision, is_current, protected) "
+        "VALUES (?, ?, ?, 'vendor-doc', 0.7, 'research', 1, 1, ?)",
+        (h, body, source_url, protected),
+    )
+    conn.commit()
+    return h
+
+
+def test_protected_supersede_is_blocked(conn):
+    from engram.dedup import gate, content_hash
+    url = "https://x/p"
+    h_human = _live_sourced(conn, body="human edit", source_url=url, protected=1)
+
+    r = gate(conn, body="new upstream bytes", source_url=url,
+             source_tier="vendor-doc", kind="research", actor="poller")
+
+    assert r.outcome == "supersede_blocked"
+    # Human row stays current, never superseded.
+    human = conn.execute("SELECT is_current, superseded_by FROM content WHERE hash = ?",
+                         (h_human,)).fetchone()
+    assert human["is_current"] == 1
+    assert human["superseded_by"] is None
+    # Upstream preserved as a non-current revision.
+    up = conn.execute("SELECT is_current FROM content WHERE hash = ?",
+                      (content_hash("new upstream bytes"),)).fetchone()
+    assert up["is_current"] == 0
+    # No superseded event; one contradicted event.
+    assert conn.execute("SELECT COUNT(*) FROM events WHERE type='superseded'").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM events WHERE type='contradicted'").fetchone()[0] == 1
+    # One unresolved contradiction linking human -> upstream.
+    c = conn.execute("SELECT hash_a, hash_b, resolved FROM contradictions").fetchall()
+    assert len(c) == 1
+    assert c[0]["hash_a"] == h_human
+    assert c[0]["hash_b"] == content_hash("new upstream bytes")
+    assert c[0]["resolved"] == 0
+
+
+def test_unprotected_row_still_supersedes(conn):
+    from engram.dedup import gate, content_hash
+    url = "https://x/q"
+    h_old = _live_sourced(conn, body="v1", source_url=url, protected=0)
+
+    r = gate(conn, body="v2", source_url=url, source_tier="vendor-doc",
+             kind="research", actor="poller")
+
+    assert r.outcome == "superseded"
+    old = conn.execute("SELECT is_current, superseded_by FROM content WHERE hash = ?",
+                       (h_old,)).fetchone()
+    assert old["is_current"] == 0
+    assert old["superseded_by"] == content_hash("v2")
+    assert conn.execute("SELECT COUNT(*) FROM events WHERE type='superseded'").fetchone()[0] == 1
+
+
+def test_identical_repoll_of_protected_is_exact_dup(conn):
+    from engram.dedup import gate
+    url = "https://x/p"
+    _live_sourced(conn, body="human edit", source_url=url, protected=1)
+    # First changed upstream blocks.
+    gate(conn, body="upstream A", source_url=url, source_tier="vendor-doc",
+         kind="research", actor="poller")
+    # Re-poll with the SAME upstream bytes -> exact_dup, no new contradiction.
+    r = gate(conn, body="upstream A", source_url=url, source_tier="vendor-doc",
+             kind="research", actor="poller")
+    assert r.outcome == "exact_dup"
+    assert conn.execute("SELECT COUNT(*) FROM contradictions").fetchone()[0] == 1
+
+
+def test_changed_upstream_updates_single_contradiction(conn):
+    from engram.dedup import gate, content_hash
+    url = "https://x/p"
+    h_human = _live_sourced(conn, body="human edit", source_url=url, protected=1)
+    gate(conn, body="upstream A", source_url=url, source_tier="vendor-doc",
+         kind="research", actor="poller")
+    gate(conn, body="upstream B", source_url=url, source_tier="vendor-doc",
+         kind="research", actor="poller")
+    # Still exactly one unresolved contradiction, hash_b advanced to the newest.
+    rows = conn.execute("SELECT hash_a, hash_b FROM contradictions WHERE resolved = 0").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["hash_a"] == h_human
+    assert rows[0]["hash_b"] == content_hash("upstream B")

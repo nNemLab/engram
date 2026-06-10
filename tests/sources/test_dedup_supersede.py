@@ -12,7 +12,8 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 def _apply_schema(conn):
-    for fn in ("001_initial.sql", "002_sources_and_revisions.sql"):
+    for fn in ("001_initial.sql", "002_sources_and_revisions.sql",
+               "003_grounding.sql", "004_protected.sql"):
         conn.executescript((REPO / "schema" / fn).read_text())
 
 
