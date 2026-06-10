@@ -62,31 +62,38 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
         name = args["name"]
         params = args.get("params", {})
         runtime = args.get("runtime", cfg.playbooks.default_runtime)
+
+        if runtime == "jupyter":
+            base, suffix = cfg.paths.playbooks_scratch, ".ipynb"
+        elif runtime == "marimo":
+            base, suffix = cfg.paths.playbooks_curated, ".py"
+        else:
+            return {"error": f"unknown runtime: {runtime}"}
+
+        template = base / name
+        if not template.exists() and template.suffix == "":
+            template = template.with_suffix(suffix)
+        # Containment: the agent-supplied name must stay inside the template dir —
+        # reject ../, absolute paths, and symlinks pointing outside.
+        if not template.resolve().is_relative_to(base.resolve()):
+            return {"error": f"playbook name escapes {base}: {name}"}
+        if not template.exists():
+            return {"error": f"template not found: {template}"}
+
         run_id = f"{_now_slug()}_{name.replace('/', '-').replace('.', '-')}_{uuid.uuid4().hex[:6]}"
         run_dir = cfg.paths.playbooks_runs / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "inputs.json").write_text(json.dumps(params, indent=2))
 
         if runtime == "jupyter":
-            template = cfg.paths.playbooks_scratch / name
-            if not template.exists() and template.suffix == "":
-                template = template.with_suffix(".ipynb")
             output = run_dir / "notebook.ipynb"
             cmd = [_resolve("papermill"), str(template), str(output), "--cwd", str(run_dir)]
             for k, v in params.items():
                 cmd += ["-p", k, str(v)]
-        elif runtime == "marimo":
-            template = cfg.paths.playbooks_curated / name
-            if not template.exists() and template.suffix == "":
-                template = template.with_suffix(".py")
+        else:
             cmd = [_resolve("marimo"), "run", str(template), "--headless"]
             for k, v in params.items():
                 cmd += [f"--{k}", str(v)]
-        else:
-            return {"error": f"unknown runtime: {runtime}"}
-
-        if not template.exists():
-            return {"error": f"template not found: {template}"}
 
         proc = subprocess.run(
             cmd, capture_output=True, text=True, cwd=run_dir,
