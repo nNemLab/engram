@@ -44,3 +44,19 @@ def test_rag_query_returns_verdict(monkeypatch):
     out = ragtool.register(conn)["rag.query"]["handler"]({"query": "flashinfer", "token_budget": 500})
     assert out["verdict"] in ("STRONG", "WEAK", "NONE")
     assert "results" in out
+
+
+def test_rag_query_token_budget_trims_results(monkeypatch):
+    from engram.mcp_server.tools import rag as ragtool
+    conn = _conn()
+    for i in range(5):
+        conn.execute("INSERT INTO content (hash,title,body,source_url,source_tier,fetched_at,"
+                     "confidence,kind,tombstoned) VALUES (?,?,?,?,?,?,?,?,0)",
+                     (f"h{i}", f"Title{i}", "alpha " * 200, None, "manual", "2026-06-10T00:00:00Z", 0.8, "kb"))
+    import engram.rag.query as q
+    monkeypatch.setattr(q, "embed_one", lambda s: b"x")
+    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [(f"h{i}", 0.8) for i in range(5)])
+    full = ragtool.register(conn)["rag.query"]["handler"]({"query": "alpha"})
+    tight = ragtool.register(conn)["rag.query"]["handler"]({"query": "alpha", "token_budget": 30})
+    assert len(tight["results"]) < len(full["results"])
+    assert len(tight["results"]) >= 1

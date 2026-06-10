@@ -10,8 +10,7 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
     def cite(args: dict[str, Any]) -> dict[str, Any]:
         from ...rag.usage import record_cited
         hashes = args["hashes"]
-        record_cited(conn, hashes, query=args.get("query", ""), turn_id=args.get("turn_id"))
-        return {"cited": len(hashes)}
+        return {"cited": record_cited(conn, hashes, query=args.get("query", ""), turn_id=args.get("turn_id"))}
 
     def query(args: dict[str, Any]) -> dict[str, Any]:
         from ...common.config import load_config
@@ -26,13 +25,24 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
             exclude_kinds=args.get("exclude_kinds"),
         )
         verdict = classify(hits, load_config().grounding)
+        results = [
+            {"hash": h.hash, "title": h.title, "score": round(h.score, 4),
+             "source_url": h.source_url, "snippet": h.body}
+            for h in hits
+        ]
+        budget = args.get("token_budget")
+        if budget:
+            kept, used = [], 0
+            for r in results:
+                cost = (len((r["title"] or "") + (r["snippet"] or "")) + 3) // 4
+                if kept and used + cost > budget:
+                    break
+                kept.append(r)
+                used += cost
+            results = kept
         return {
             "verdict": verdict,
-            "results": [
-                {"hash": h.hash, "title": h.title, "score": round(h.score, 4),
-                 "source_url": h.source_url, "snippet": h.body}
-                for h in hits
-            ],
+            "results": results,
         }
 
     return {

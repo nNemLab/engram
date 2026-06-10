@@ -11,7 +11,7 @@ from ..common.time import utcnow_iso
 
 
 def record_cited(conn: sqlite3.Connection, hashes: list[str], *, query: str = "",
-                 turn_id: str | None = None, actor: str = "agent") -> None:
+                 turn_id: str | None = None, actor: str = "agent") -> int:
     """Append a `cited` event (payload {hashes, query, turn_id}) and bump content_usage.
 
     Idempotent per (turn_id, hash): if the same hash was already cited under the same
@@ -19,6 +19,8 @@ def record_cited(conn: sqlite3.Connection, hashes: list[str], *, query: str = ""
     the rag.cite tool. **If turn_id is None, NO deduplication is performed and every
     call counts** — callers that may fire more than once per turn (e.g. a tool + a
     backstop hook) MUST pass a stable turn_id.
+
+    Returns the number of freshly-recorded hashes (those NOT skipped by dedup).
     """
     now = utcnow_iso("ms")
     # Filter out hashes already counted for this turn
@@ -35,7 +37,7 @@ def record_cited(conn: sqlite3.Connection, hashes: list[str], *, query: str = ""
                 continue
         active.append(h)
     if not active:
-        return
+        return 0
     # One event per call, carrying all active hashes
     event_log.append(conn, "cited",
                      {"hashes": active, "query": query, "turn_id": turn_id}, actor=actor)
@@ -45,6 +47,7 @@ def record_cited(conn: sqlite3.Connection, hashes: list[str], *, query: str = ""
             "ON CONFLICT(content_hash) DO UPDATE SET use_count = use_count + 1, last_cited_at = ?",
             (h, now, now),
         )
+    return len(active)
 
 
 def rebuild_usage(conn: sqlite3.Connection) -> None:

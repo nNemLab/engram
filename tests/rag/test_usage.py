@@ -41,3 +41,10 @@ def test_usage_factor_grows_with_count(tmp_path):
     record_cited(conn, ["h1"], query="x")
     record_cited(conn, ["h1"], query="y")
     assert usage_factor(conn, "h1", weight=0.5) > base == 1.0
+
+
+def test_record_cited_returns_fresh_count(tmp_path):
+    from engram.rag.usage import record_cited
+    conn = fresh_conn(tmp_path)
+    assert record_cited(conn, ["h1", "h2"], query="x", turn_id="t1") == 2
+    assert record_cited(conn, ["h1", "h3"], query="x", turn_id="t1") == 1  # h1 deduped
