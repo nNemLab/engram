@@ -17,7 +17,7 @@
   <a href="https://github.com/nNemLab/engram/releases"><img alt="latest release" src="https://img.shields.io/github/v/release/nNemLab/engram?display_name=tag&sort=semver"></a>
 </p>
 
-> **Status:** `v0.2.0` — early development. While on the `0.x` series, APIs, schema, and on-disk layout may change between minor versions without migration paths.
+> **Status:** early development (`0.x`). While on the `0.x` series, APIs, schema, and on-disk layout may change between minor versions without migration paths. (The badge above shows the latest release.)
 
 ---
 
