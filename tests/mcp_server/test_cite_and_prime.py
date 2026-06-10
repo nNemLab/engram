@@ -30,3 +30,17 @@ def test_session_prime_returns_block():
                  "VALUES ('g1','ship docker','active',5,'{}','2026-06-09T00:00:00Z','2026-06-09T00:00:00Z')")
     out = register(conn)["session.prime"]["handler"]({"cwd": "/x"})
     assert "ship docker" in out["block"]
+
+
+def test_rag_query_returns_verdict(monkeypatch):
+    from engram.mcp_server.tools import rag as ragtool
+    conn = _conn()
+    conn.execute("INSERT INTO content (hash,title,body,source_url,source_tier,fetched_at,"
+                 "confidence,kind,tombstoned) VALUES "
+                 "('h1','T','flashinfer oom guardrails',NULL,'manual','2026-06-10T00:00:00Z',0.8,'kb',0)")
+    import engram.rag.query as q
+    monkeypatch.setattr(q, "embed_one", lambda s: b"x")
+    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [("h1", 0.91)])
+    out = ragtool.register(conn)["rag.query"]["handler"]({"query": "flashinfer", "token_budget": 500})
+    assert out["verdict"] in ("STRONG", "WEAK", "NONE")
+    assert "results" in out
