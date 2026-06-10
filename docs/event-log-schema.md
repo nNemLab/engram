@@ -1,5 +1,7 @@
 # Event log schema
 
+> Part of the [engram documentation](README.md).
+
 Authoritative reference. Schema lives at `schema/001_initial.sql`; this document
 explains the *intent* of each event type.
 

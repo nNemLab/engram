@@ -1,5 +1,7 @@
 # Architecture
 
+> Part of the [engram documentation](README.md).
+
 ## Principle
 
 The event log is canonical. Everything else — the Obsidian vault, the FTS5
@@ -94,8 +96,9 @@ demand (demand-driven refresh).
 
 ### MCP server (`src/engram/mcp_server/`)
 
-One stdio server exposing six tool namespaces. Tool handlers run in a worker
-thread (`asyncio.to_thread`) so a slow embed doesn't block the stdio loop. Holds
+One server (stdio or HTTP) exposing seven tool namespaces (`kb`, `rag`,
+`research`, `playbook`, `goals`, `sources`, `session`). Tool handlers run in a
+worker thread (`asyncio.to_thread`) so a slow embed doesn't block the loop. Holds
 one long-lived SQLite connection.
 
 | Namespace | Tools |

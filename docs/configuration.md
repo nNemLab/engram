@@ -1,5 +1,7 @@
 # Configuration
 
+> Part of the [engram documentation](README.md).
+
 Engram reads a single config file: `~/.engram/config.yml` (override the path
 with `$ENGRAM_CONFIG`). Secrets live separately in `~/.engram/.env`. Both are
 written by `bin/eos-init` on first run from the templates

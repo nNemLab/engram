@@ -1,31 +1,41 @@
 # MCP tool reference
 
+> Part of the [engram documentation](README.md).
+
 All tools exposed by `engram-mcp`. Authoritative schemas live in code; this
 is a quick reference.
 
 ## kb.*
 
 - **`kb.write`** — Push content through the dedup gate. Returns
-  `{outcome: 'new'|'exact_dup'|'near_dup', hash, merged_into?}`.
+  `{outcome: 'new'|'exact_dup'|'near_dup'|'superseded'|'supersede_blocked', hash, merged_into?}`.
   Required: `body`. Optional: `title`, `source_url`, `source_tier`,
   `confidence`, `ttl_days`, `kind`.
 - **`kb.get`** — Fetch by hash.
 - **`kb.list`** — Recent entries, optionally filtered by `kind`.
+- **`kb.tombstone`** — Soft-delete content by hash (sets `tombstoned = 1`; the row
+  stays in the log and superseded revisions remain queryable).
 - **`kb.contradictions`** — List unresolved (default) or all contradictions.
 - **`kb.flag_contradiction`** — Mark two hashes as contradicting; emits a
   `contradicted` event.
 
 ## rag.*
 
-- **`rag.query`** — Hybrid retrieval. Returns ranked hits with snippets,
-  source_url, fetched_at, and combined score. Logs a `retrieved` event per hit
-  (drives demand-driven staleness via the reactor).
+- **`rag.query`** — Hybrid retrieval (dense + BM25, RRF-fused, confidence-ranked).
+  Returns a calibration `verdict` (`STRONG`/`WEAK`/`NONE`) plus ranked `results`
+  (snippet, `source_url`, `fetched_at`, score). Optional: `token_budget`, `level`
+  (`snippet`/`full`), `since`. Logs a `retrieved` event per hit (drives
+  demand-driven staleness via the reactor).
+- **`rag.cite`** — Record that an answer was grounded in specific content hashes;
+  weights those entries up in later ranking (citation-weighted retrieval).
 
 ## research.*
 
 - **`research.fetch_url`** — Ingest a fetched URL's body through the gate.
   Caller does the actual HTTP fetch; this tool stamps provenance and
   dedups.
+- **`research.ingest_url`** — Fetch a URL, extract its body, and store it through
+  the gate. The sink for `search_web` / `fetch_arxiv` keepers.
 - **`research.search_web`** — Self-hosted web search: SearXNG → parallel
   fetch → trafilatura extraction → cross-encoder rerank → top-k. Returns ranked
   URLs with relevance score, snippet, and extracted body length; pass the
@@ -73,6 +83,9 @@ changes (`superseded` outcome).
   `kb.tombstone` content first if you want a clean removal.
 - **`sources.fetch_now`** — Force immediate poll on next 60s tick (sets
   `next_poll_at = NULL`).
+- **`sources.health`** — Deterministic per-source health view: liveness, content
+  counts, duplicate ratio, and a derived status (`ok` / `overdue` / `paused` /
+  `erroring`).
 
 ### Adapter types
 
@@ -85,6 +98,13 @@ changes (`superseded` outcome).
 
 All adapters accept an optional `config.request_interval_ms` to override the
 per-adapter default rate limit.
+
+## session.*
+
+- **`session.prime`** — Return a priming block (active goals + recent
+  high-confidence knowledge) to seed a new session. Call at session start.
+- **`session.reflect`** — Return a deterministic reflection brief: unresolved
+  contradictions, stale high-value entries, and idle active goals. No model calls.
 
 ## Adding a tool
 
