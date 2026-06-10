@@ -77,6 +77,16 @@ class ResearchConfig:
 
 
 @dataclass
+class GroundingConfig:
+    tau_high: float = 0.62      # dense-cosine floor for STRONG
+    tau_low: float = 0.45       # dense-cosine floor for WEAK (below = NONE)
+    delta: float = 0.08         # min top-1 vs top-2 margin for STRONG
+    token_budget: int = 1500    # default packed-injection budget
+    port: int = 8770            # grounding daemon (Phase 2) loopback port
+    usage_weight: float = 0.5   # weight of the usage term in ranking
+
+
+@dataclass
 class Config:
     paths: Paths
     rag: RagConfig
@@ -86,6 +96,7 @@ class Config:
     reactor: ReactorConfig
     playbooks: PlaybookConfig
     research: ResearchConfig
+    grounding: GroundingConfig
 
     @property
     def vault(self) -> Path: return self.paths.vault
@@ -124,6 +135,7 @@ def load_config(path: Path | None = None) -> Config:
         reactor=ReactorConfig(**raw.get("reactor", {})),
         playbooks=PlaybookConfig(**raw.get("playbooks", {})),
         research=ResearchConfig(**raw.get("research", {})),
+        grounding=GroundingConfig(**raw.get("grounding", {})),
     )
 
 

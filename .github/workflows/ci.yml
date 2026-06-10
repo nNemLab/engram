@@ -64,9 +64,9 @@ jobs:
         if: steps.filter.outputs.code == 'true'
         run: uv run --locked --python 3.11 --extra dev ruff check .
 
-      # tests/sources, tests/research, tests/mcp_server, tests/common are the
-      # hermetic unit suites: sqlite + httpx.MockTransport, no network, no
-      # embedding model, no LLM — safe on hosted runners.
+      # tests/sources, tests/research, tests/mcp_server, tests/common, tests/rag are
+      # the hermetic unit suites: sqlite + httpx.MockTransport, no network, no
+      # embedding model, no LLM (rag tests stub load_config/embeddings) — safe on hosted runners.
       # tests/integration (end-to-end) is intentionally excluded until its
       # fixtures/mocks are wired up (see CI "Option B").
       #
@@ -76,7 +76,7 @@ jobs:
       # an optional `[rag]` extra so this job installs a lighter core.
       - name: Unit tests
         if: steps.filter.outputs.code == 'true'
-        run: uv run --locked --python 3.11 --extra dev pytest tests/sources tests/research tests/mcp_server tests/common -q
+        run: uv run --locked --python 3.11 --extra dev pytest tests/sources tests/research tests/mcp_server tests/common tests/rag -q
 
       - name: Doc-only change — suite skipped
         if: steps.filter.outputs.code != 'true'

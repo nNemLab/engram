@@ -8,6 +8,7 @@ from datetime import UTC
 from .. import log as event_log
 from ..common.config import load_config
 from .embed import embed_one
+from .usage import usage_factor
 
 
 @dataclass
@@ -19,6 +20,7 @@ class Hit:
     source_url: str | None
     confidence: float
     fetched_at: str | None
+    dense_sim: float | None = None
 
 
 def _vector_hits(conn: sqlite3.Connection, query_emb: bytes, k: int) -> list[tuple[str, float]]:
@@ -63,16 +65,20 @@ def _confidence_decay(fetched_at: str | None, half_life_days: int) -> float:
 def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = None,
                   log_retrieval: bool = True,
                   exclude_source_tiers: list[str] | None = None,
-                  exclude_kinds: list[str] | None = None) -> list[Hit]:
+                  exclude_kinds: list[str] | None = None,
+                  since: str | None = None, level: str = "snippet") -> list[Hit]:
     cfg = load_config()
     k = top_k or cfg.rag.top_k
     # Over-fetch when filtering so we can still return ~k hits after the cut.
     fetch_mult = 4 if (exclude_source_tiers or exclude_kinds) else 2
 
     rankings: list[list[tuple[str, float]]] = []
+    dense_map: dict[str, float] = {}
     try:
         q_emb = embed_one(query)
-        rankings.append(_vector_hits(conn, q_emb, k * fetch_mult))
+        dv = _vector_hits(conn, q_emb, k * fetch_mult)
+        dense_map = dict(dv)
+        rankings.append(dv)
     except Exception:
         # Embedding failure should not kill retrieval; fall back to BM25 only.
         pass
@@ -104,16 +110,25 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = N
             continue
         if r["kind"] in excl_kinds:
             continue
+        if since and (r["fetched_at"] or "") < since:
+            continue
         tier_w = weights.get(r["source_tier"] or "", 0.5)
         decay = _confidence_decay(r["fetched_at"], half_life)
-        ranked_score = rrf_score * (r["confidence"] or 0.5) * tier_w * decay
+        uf = usage_factor(conn, h, weight=cfg.grounding.usage_weight)
+        ranked_score = rrf_score * (r["confidence"] or 0.5) * tier_w * decay * uf
         hits.append(Hit(
             hash=h, title=r["title"], body=r["body"], score=ranked_score,
             source_url=r["source_url"], confidence=r["confidence"], fetched_at=r["fetched_at"],
+            dense_sim=dense_map.get(h),
         ))
 
     hits.sort(key=lambda x: x.score, reverse=True)
     hits = hits[:k]
+    if level == "snippet":
+        for h in hits:
+            h.body = (h.body[:319] + "…") if len(h.body) > 320 else h.body
+    # level == "section"/"full": leave body as stored (section==full for now;
+    # true section extraction is a follow-up).
 
     if log_retrieval and hits:
         # One event per query, with the list of returned hashes.

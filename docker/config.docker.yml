@@ -74,3 +74,12 @@ playbooks:
     kernel: python3
   marimo:
     headless: true
+
+# Retrieval grounding / ambient memory (Phase 1+). Deterministic, offline.
+grounding:
+  tau_high: 0.62      # dense-cosine similarity floor for a STRONG verdict
+  tau_low: 0.45       # floor for WEAK; below this is NONE (nothing injected)
+  delta: 0.08         # min margin (top-1 minus top-2) required for STRONG
+  token_budget: 1500  # default size of the packed grounding block
+  port: 8770          # grounding daemon loopback port (Phase 2)
+  usage_weight: 0.5   # how strongly citation usage boosts ranking
