@@ -13,7 +13,7 @@ import httpx
 import trafilatura
 
 from ..common.config import load_config
-from . import rerank
+from . import rerank, safe_fetch
 
 
 @dataclass
@@ -45,8 +45,8 @@ async def _searxng_query(client: httpx.AsyncClient, base_url: str, q: str,
 
 async def _fetch_one(client: httpx.AsyncClient, url: str) -> str:
     try:
-        r = await client.get(url, timeout=_FETCH_TIMEOUT, follow_redirects=True,
-                             headers={"User-Agent": _USER_AGENT})
+        r = await safe_fetch.get_async(client, url, timeout=_FETCH_TIMEOUT,
+                                       headers={"User-Agent": _USER_AGENT})
         r.raise_for_status()
         if r.status_code == 200 and "text" in r.headers.get("content-type", ""):
             return r.text

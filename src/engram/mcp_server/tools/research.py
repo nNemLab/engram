@@ -46,11 +46,15 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
     def ingest_url(args: dict[str, Any]) -> dict[str, Any]:
         """Fetch + extract on the server side, then gate. Saves a roundtrip
         when the agent already knows the URL it wants."""
-        import httpx
         import trafilatura
+
+        from ...research import safe_fetch
         url = args["url"]
-        r = httpx.get(url, timeout=25, follow_redirects=True,
-                      headers={"User-Agent": "engram-research/0.1"})
+        try:
+            r = safe_fetch.get(url, timeout=25,
+                               headers={"User-Agent": "engram-research/0.1"})
+        except safe_fetch.UnsafeURLError as e:
+            return {"error": str(e)}
         r.raise_for_status()
         body = trafilatura.extract(r.text, include_comments=False, include_tables=True)
         if not body:

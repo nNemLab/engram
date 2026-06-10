@@ -1,0 +1,147 @@
+"""SSRF guard (issue #31): scheme pinning, non-public IP rejection,
+per-hop redirect re-validation."""
+import socket
+
+import httpx
+import pytest
+
+from engram.research import safe_fetch
+from engram.research.safe_fetch import UnsafeURLError, assert_public_url
+
+# Public IP literal (example.com's documentation range) — only ever hit a
+# MockTransport, never the network.
+PUBLIC = "93.184.216.34"
+
+
+# --- assert_public_url -------------------------------------------------------
+
+@pytest.mark.parametrize("url", [
+    "http://127.0.0.1/",
+    "http://127.0.0.1:8080/admin",
+    "http://10.0.0.5/",
+    "http://192.168.1.115:1234/v1",
+    "http://169.254.169.254/latest/meta-data/",
+    "http://0.0.0.0/",
+    "http://[::1]/",
+    "http://[fd00::1]/",
+])
+def test_rejects_non_public_ip_literals(url):
+    with pytest.raises(UnsafeURLError):
+        assert_public_url(url)
+
+
+@pytest.mark.parametrize("url", [
+    "ftp://93.184.216.34/file",
+    "file:///etc/passwd",
+    "gopher://93.184.216.34/",
+])
+def test_rejects_non_http_schemes(url):
+    with pytest.raises(UnsafeURLError):
+        assert_public_url(url)
+
+
+def test_rejects_url_without_host():
+    with pytest.raises(UnsafeURLError):
+        assert_public_url("http:///path")
+
+
+def test_accepts_public_ip_literal():
+    assert_public_url(f"http://{PUBLIC}/page")
+
+
+def test_hostname_resolving_to_private_ip_rejected(monkeypatch):
+    def fake_getaddrinfo(host, port, *a, **kw):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.1.2.3", 80))]
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    with pytest.raises(UnsafeURLError):
+        assert_public_url("http://evil.example/")
+
+
+def test_hostname_resolving_to_public_ip_accepted(monkeypatch):
+    def fake_getaddrinfo(host, port, *a, **kw):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (PUBLIC, 80))]
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    assert_public_url("https://good.example/")
+
+
+def test_hostname_with_any_private_answer_rejected(monkeypatch):
+    """One private A record among public ones is enough to reject."""
+    def fake_getaddrinfo(host, port, *a, **kw):
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (PUBLIC, 80)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 80)),
+        ]
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    with pytest.raises(UnsafeURLError):
+        assert_public_url("http://rebind.example/")
+
+
+def test_unresolvable_hostname_rejected(monkeypatch):
+    def fake_getaddrinfo(host, port, *a, **kw):
+        raise socket.gaierror("NXDOMAIN")
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    with pytest.raises(UnsafeURLError):
+        assert_public_url("http://nxdomain.example/")
+
+
+# --- sync get: redirect hops re-validated ------------------------------------
+
+def test_sync_get_blocks_redirect_to_loopback():
+    def handler(request):
+        return httpx.Response(302, headers={"location": "http://127.0.0.1:9999/secret"})
+    with pytest.raises(UnsafeURLError):
+        safe_fetch.get(f"http://{PUBLIC}/", transport=httpx.MockTransport(handler))
+
+
+def test_sync_get_follows_public_redirect():
+    def handler(request):
+        if request.url.path == "/start":
+            return httpx.Response(301, headers={"location": f"http://{PUBLIC}/end"})
+        return httpx.Response(200, text="ok")
+    r = safe_fetch.get(f"http://{PUBLIC}/start", transport=httpx.MockTransport(handler))
+    assert r.status_code == 200
+    assert r.text == "ok"
+
+
+def test_sync_get_caps_redirect_count():
+    def handler(request):
+        return httpx.Response(302, headers={"location": f"http://{PUBLIC}/loop"})
+    with pytest.raises(UnsafeURLError):
+        safe_fetch.get(f"http://{PUBLIC}/loop",
+                       transport=httpx.MockTransport(handler), max_redirects=3)
+
+
+def test_sync_get_validates_before_any_request():
+    def handler(request):
+        raise AssertionError("request must not be sent for a private URL")
+    with pytest.raises(UnsafeURLError):
+        safe_fetch.get("http://192.168.0.1/", transport=httpx.MockTransport(handler))
+
+
+# --- async get: same guarantees ----------------------------------------------
+
+async def test_async_get_blocks_redirect_to_lan():
+    def handler(request):
+        return httpx.Response(302, headers={"location": "http://192.168.1.115:1234/v1/models"})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(UnsafeURLError):
+            await safe_fetch.get_async(client, f"http://{PUBLIC}/")
+
+
+async def test_async_get_follows_public_redirect():
+    def handler(request):
+        if request.url.path == "/start":
+            return httpx.Response(301, headers={"location": f"http://{PUBLIC}/end"})
+        return httpx.Response(200, text="ok")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        r = await safe_fetch.get_async(client, f"http://{PUBLIC}/start")
+    assert r.status_code == 200
+    assert r.text == "ok"
+
+
+async def test_async_get_rejects_private_url_before_request():
+    def handler(request):
+        raise AssertionError("request must not be sent for a private URL")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(UnsafeURLError):
+            await safe_fetch.get_async(client, "http://[::1]:6379/")
