@@ -3,10 +3,22 @@
 All notable changes to this project are documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-From v0.3.0 onward, releases are automated by
+From v0.2.1 onward, releases are automated by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/); entries below
-v0.3.0 were authored by hand.
+v0.2.1 were authored by hand.
+
+## [0.2.1](https://github.com/nNemLab/engram/compare/v0.2.0...v0.2.1) (2026-06-10)
+
+
+### Features
+
+* **db:** schema/embedding-dimension compatibility guard + eos-version ([83079bd](https://github.com/nNemLab/engram/commit/83079bd91f48252ca47ce92dc7a6248b9ae58d2f))
+
+
+### Documentation
+
+* restructure README + add documentation index ([fb4322e](https://github.com/nNemLab/engram/commit/fb4322e497e5cf060ec7140b710e1be1f1cf3fc5))
 
 ## [0.2.0] - 2026-06-10
 
