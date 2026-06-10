@@ -91,7 +91,7 @@ def _live_sourced(conn, *, body, source_url, protected):
 
 
 def test_protected_supersede_is_blocked(conn):
-    from engram.dedup import gate, content_hash
+    from engram.dedup import content_hash, gate
     url = "https://x/p"
     h_human = _live_sourced(conn, body="human edit", source_url=url, protected=1)
 
@@ -120,7 +120,7 @@ def test_protected_supersede_is_blocked(conn):
 
 
 def test_unprotected_row_still_supersedes(conn):
-    from engram.dedup import gate, content_hash
+    from engram.dedup import content_hash, gate
     url = "https://x/q"
     h_old = _live_sourced(conn, body="v1", source_url=url, protected=0)
 
@@ -150,7 +150,7 @@ def test_identical_repoll_of_protected_is_exact_dup(conn):
 
 
 def test_changed_upstream_updates_single_contradiction(conn):
-    from engram.dedup import gate, content_hash
+    from engram.dedup import content_hash, gate
     url = "https://x/p"
     h_human = _live_sourced(conn, body="human edit", source_url=url, protected=1)
     gate(conn, body="upstream A", source_url=url, source_tier="vendor-doc",
@@ -166,6 +166,7 @@ def test_changed_upstream_updates_single_contradiction(conn):
 
 def test_poll_one_counts_blocked(conn, monkeypatch):
     import asyncio
+
     from engram.poller import poller
     from engram.poller.adapters import Candidate
 
