@@ -45,6 +45,7 @@ engram-reactor   & pids+=($!)
 engram-projector & pids+=($!)
 engram-watcher   & pids+=($!)
 engram-poller    & pids+=($!)
+engram-rag serve --host 0.0.0.0 --port 8770 & pids+=($!)
 
 # Digest scheduler: run the daily-digest playbook every ENGRAM_DIGEST_INTERVAL seconds.
 ( interval="${ENGRAM_DIGEST_INTERVAL:-86400}"

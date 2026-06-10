@@ -54,6 +54,21 @@ claude mcp add --transport http engram http://localhost:8765/mcp
 - SearXNG is internal-only (`expose:` not `ports:`) and is not reachable from
   the host.
 
+## Grounding daemon (port 8770)
+
+The stack also serves the **grounding daemon** at `http://localhost:8770`.
+Endpoints: `/grounding` (verdict + memory block for a query), `/prime` (session-priming block: active goals + recent entries), and `/healthz`. It is loopback-only, consumed by the Phase-3 ambient
+hook — there is nothing to configure unless you need a different port
+(`grounding.port` in `config.yml`).
+
+Verify the grounding daemon:
+
+```bash
+curl -s http://127.0.0.1:8770/healthz                              # {"status":"ok"}
+curl -s -X POST http://127.0.0.1:8770/grounding \
+  -H 'Content-Type: application/json' -d '{"query":"your topic"}'  # {"verdict":...,"block":...}
+```
+
 ## LLM provider (optional, provider-agnostic)
 
 engram's core needs no LLM — the kernel reasons. Only the synthesis playbooks

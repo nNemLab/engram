@@ -1,6 +1,6 @@
 # systemd user units
 
-Four long-running daemons plus a daily-digest timer. Install per-user (no sudo)
+Five long-running daemons plus a daily-digest timer. Install per-user (no sudo)
 so they live alongside the user's `~/.engram/` runtime.
 
 ```bash
@@ -10,7 +10,7 @@ cp systemd/engram-*.service ~/.config/systemd/user/
 cp systemd/engram-daily-digest.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now \
-  engram-projector engram-watcher engram-reactor engram-poller engram-daily-digest.timer
+  engram-projector engram-watcher engram-reactor engram-poller engram-rag engram-daily-digest.timer
 ```
 
 Check:
