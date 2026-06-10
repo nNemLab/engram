@@ -162,3 +162,32 @@ def test_changed_upstream_updates_single_contradiction(conn):
     assert len(rows) == 1
     assert rows[0]["hash_a"] == h_human
     assert rows[0]["hash_b"] == content_hash("upstream B")
+
+
+def test_poll_one_counts_blocked(conn, monkeypatch):
+    import asyncio
+    from engram.poller import poller
+    from engram.poller.adapters import Candidate
+
+    url = "https://x/p"
+    _live_sourced(conn, body="human edit", source_url=url, protected=1)
+    conn.execute(
+        "INSERT INTO sources (id, name, adapter, url, schedule, source_tier) "
+        "VALUES ('s1', 'fake', 'fake', ?, '7d', 'vendor-doc')",
+        (url,),
+    )
+    conn.commit()
+
+    class FakeAdapter:
+        name = "fake"
+        async def fetch(self, source):
+            yield Candidate(body="new upstream", title="T", source_url=url)
+
+    monkeypatch.setitem(poller.ADAPTERS, "fake", FakeAdapter())
+    source = {"id": "s1", "adapter": "fake", "schedule": "7d",
+              "source_tier": "vendor-doc", "error_count": 0, "paused": 0, "cursor": None}
+
+    counts = asyncio.run(poller.poll_one(conn, source))
+    assert counts["blocked"] == 1
+    assert counts["superseded"] == 0
+    assert counts["ingested"] == 0
