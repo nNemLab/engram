@@ -167,3 +167,9 @@ auto-detects native *or* Docker installs (run `docker compose down -v` is handle
   `~/.engram/.venv/bin/python -c "from engram.rag.embed import embed_one; embed_one('warm')"`.
 - **Vault projector not writing** — check `~/.engram/db.sqlite` exists,
   check `daemon_cursors` is being updated, check the projector's stderr.
+- **`IncompatibleDatabaseError` on start** — the database is newer than this
+  build (schema ahead), or the configured embedding dimension no longer matches
+  the `vec0` table. Run `./bin/eos-version` to see what's mismatched, then
+  upgrade engram / `eos-restore` a compatible snapshot / re-embed (see
+  [configuration.md](configuration.md)). `ENGRAM_SKIP_VERSION_CHECK=1` bypasses
+  the guard for recovery, but may corrupt data.

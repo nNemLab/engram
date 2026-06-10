@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Report engram + database version and compatibility status.
+set -euo pipefail
+
+"${ENGRAM_VENV:-$HOME/.engram/.venv}/bin/python" - <<'PY'
+from engram.common.db import version_report
+
+r = version_report()
+print(f"engram {r['app_version']}")
+print(f"  db path        : {r['db_path']}")
+if not r["initialized"]:
+    print("  database       : not initialized (run ./bin/eos-init)")
+else:
+    db, code = r["schema_db"], r["schema_code"]
+    if db == code:
+        sync = "in sync"
+    elif db > code:
+        sync = "DB AHEAD — upgrade engram or `eos-restore` a compatible snapshot"
+    else:
+        sync = "migrations pending (apply on next start)"
+    print(f"  schema         : db v{db} / code v{code}  ({sync})")
+
+    et, ec = r["embed_dim_table"], r["embed_dim_config"]
+    if et is None:
+        print(f"  embeddings dim : config {ec} (no vector table yet)")
+    elif et == ec:
+        print(f"  embeddings dim : {et} (matches config)")
+    else:
+        print(f"  embeddings dim : table {et} / config {ec}  (MISMATCH — re-embed, see #43)")
+PY

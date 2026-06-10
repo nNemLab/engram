@@ -67,6 +67,11 @@ swap.** Moving to a model with a different output dimension means editing the
 schema's `FLOAT[NNN]`, adding a migration, and replaying the log from event 0 to
 re-embed everything. Treat that as a migration, not a config tweak.
 
+If the configured dimension stops matching the existing `vec0` table, engram
+**refuses to start** with an `IncompatibleDatabaseError` rather than silently
+returning broken results — re-embed the corpus (or revert the model) first.
+Run `./bin/eos-version` to see the table dim vs. the configured dim.
+
 The reranker has no such constraint — a cross-encoder emits a scalar score — so
 you can swap it freely at any time.
 
