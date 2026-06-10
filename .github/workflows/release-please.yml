@@ -1,0 +1,29 @@
+name: release-please
+
+# On every push to main, release-please maintains a standing "release PR" that
+# accumulates the changelog + version bump computed from the Conventional
+# Commits since the last release. Merge that PR to cut a release: release-please
+# then tags the repo and creates the GitHub release. It never pushes to main
+# directly (PR model), so protected-branch rules are respected.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write        # create tags + GitHub releases
+  pull-requests: write   # open/update the release PR
+
+# Don't let two release runs race; never cancel one mid-release.
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

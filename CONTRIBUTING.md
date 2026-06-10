@@ -48,6 +48,25 @@ keep imports sorted (`I`) and avoid introducing new lint failures.
 4. Open a PR against `main` with a clear description of the change and its
    motivation.
 
+## Commits & releases
+
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+- `feat: …` — a new feature (bumps the **minor** version).
+- `fix: …` — a bug fix (bumps the **patch** version).
+- `feat!: …` or a `BREAKING CHANGE:` footer — a breaking change. While on
+  `0.x` this bumps the **minor** version (it will bump **major** once the
+  project reaches `1.0.0`).
+- `docs:` / `test:` / `chore:` / `build:` / `ci:` / `refactor:` — no release.
+
+Releases are automated by
+[release-please](https://github.com/googleapis/release-please): every merge to
+`main` updates a standing **release PR** that accumulates the changelog and the
+version bump computed from these commits. **Cutting a release is just merging
+that PR** — release-please then tags the repo, bumps the version everywhere
+(`pyproject.toml`, `src/engram/__init__.py`, the plugin manifest), and publishes
+the GitHub release. No manual version edits.
+
 ## License
 
 Engram is licensed under [AGPL-3.0-or-later](LICENSE). By contributing, you
