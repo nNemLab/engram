@@ -50,14 +50,17 @@ keep imports sorted (`I`) and avoid introducing new lint failures.
 
 ## Commits & releases
 
-Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/):
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/).
+While the project is on `0.x` it uses **conservative** bumping — features and
+fixes both ship as patches, and a minor is a deliberate choice:
 
-- `feat: …` — a new feature (bumps the **minor** version).
-- `fix: …` — a bug fix (bumps the **patch** version).
-- `feat!: …` or a `BREAKING CHANGE:` footer — a breaking change. While on
-  `0.x` this bumps the **minor** version (it will bump **major** once the
-  project reaches `1.0.0`).
+- `feat: …` — a new feature → **patch** bump (while `0.x`).
+- `fix: …` — a bug fix → **patch** bump.
+- `feat!: …` or a `BREAKING CHANGE:` footer → **minor** bump (while `0.x`; it
+  will bump **major** once the project reaches `1.0.0`).
 - `docs:` / `test:` / `chore:` / `build:` / `ci:` / `refactor:` — no release.
+- To cut a minor for a notable-but-non-breaking change, add `Release-As: 0.X.0`
+  to the commit.
 
 Releases are automated by
 [release-please](https://github.com/googleapis/release-please): every merge to
