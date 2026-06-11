@@ -14,7 +14,7 @@
   <a href="LICENSE"><img alt="License: AGPL-3.0-or-later" src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg"></a>
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-blue.svg">
   <a href="https://docs.astral.sh/uv/"><img alt="built with uv" src="https://img.shields.io/badge/built%20with-uv-261230.svg"></a>
-  <a href="https://github.com/nNemLab/engram/releases"><img alt="latest release" src="https://img.shields.io/github/v/release/nNemLab/engram?display_name=tag&sort=semver"></a>
+  <a href="https://github.com/nNemLab/engram/releases"><img alt="latest release" src="https://img.shields.io/github/v/release/nNemLab/engram?sort=semver&amp;display_name=tag&amp;cacheSeconds=3600"></a>
 </p>
 
 > **Status:** early development (`0.x`). While on the `0.x` series, APIs, schema, and on-disk layout may change between minor versions without migration paths. (The badge above shows the latest release.)

@@ -125,8 +125,12 @@ Tombstoned content gets its vault file deleted.
 
 `watchdog` over the vault. On a debounced modify:
 
-- If the path is in `vault_state`: diff against `rendered_body`, update
-  `content.body`, emit a `vault_edit` event. The human's body becomes
+- If the path is in `vault_state`: diff against `rendered_body` and record the
+  edit as a new content revision — a fresh `is_current=1, protected=1` row
+  addressed by the edited body, the prior revision marked `is_current=0` with
+  `superseded_by` set, `vault_state` repointed, and a `vault_edit` event emitted.
+  Rehashing keeps content addressed by SHA-256 of its body; `protected=1` stops
+  the poller from superseding the human's edit. The human's body becomes
   authoritative.
 - If unknown: treat as an inbox drop, run through the dedup gate as
   `kind='kb', actor='human'`.
@@ -236,7 +240,7 @@ ranker uses this so ranking stays correct without manual tuning.
 
 ```
 engram/
-├── schema/                       # 001_initial.sql + 002_sources_and_revisions.sql
+├── schema/                       # 001_initial.sql + gated migrations 002–005
 ├── src/engram/
 │   ├── common/                   # config, db connection, migration runner, paths
 │   ├── log.py                    # event log read/write

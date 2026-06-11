@@ -25,7 +25,8 @@ With none set, synthesis falls back to structural (non-LLM) output.
 | Key | Default | What it does |
 |---|---|---|
 | `paths.root` | `~/.engram` | Where the database, vault, venv, and `.env` live. |
-| `rag.embed_model` | `sentence-transformers/all-MiniLM-L6-v2` | Embedding model. **384-dim constraint applies — see below.** |
+| `rag.embed_model` | `sentence-transformers/all-MiniLM-L6-v2` | Embedding model. Its output width must match `rag.embed_dim` — see below. |
+| `rag.embed_dim` | `384` | Width of the `vec0` vector index. Changing it (a new model with a different dimension) requires `eos reembed` — see below. |
 | `research.reranker_model` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder reranker (freely swappable). |
 | `research.searxng_url` | `http://127.0.0.1:8888` | Your SearXNG endpoint for web search. |
 | `confidence.source_tier_weights` | `{}` | Per-source-class trust weights feeding the ranker. |
@@ -59,18 +60,23 @@ So the lane is decided by which torch wheel lives in `~/.engram/.venv`:
 The model you choose should match the lane — a 7B embedder on CPU is unusable; a
 384-dim MiniLM on a GPU just wastes the card.
 
-### ⚠️ The embedding dimension is fixed at 384
+### The embedding dimension and re-embedding
 
-The vector table is declared `vec0(... embedding FLOAT[384])` in
-`schema/001_initial.sql`. **Only another 384-dimension model is a config-only
-swap.** Moving to a model with a different output dimension means editing the
-schema's `FLOAT[NNN]`, adding a migration, and replaying the log from event 0 to
-re-embed everything. Treat that as a migration, not a config tweak.
+The `vec0` vector table is fixed-width: it's created as
+`vec0(... embedding FLOAT[N])` where `N` is `rag.embed_dim` (default 384). A
+same-dimension model is a config-only swap; moving to a model with a *different*
+output dimension means rebuilding the index at the new width.
 
-If the configured dimension stops matching the existing `vec0` table, engram
-**refuses to start** with an `IncompatibleDatabaseError` rather than silently
-returning broken results — re-embed the corpus (or revert the model) first.
-Run `./bin/eos-version` to see the table dim vs. the configured dim.
+That rebuild is a one-command migration, `eos reembed`, not a manual schema edit:
+it snapshots the database first, drops and recreates the `embeddings` table at
+the configured `rag.embed_dim`, and re-embeds every live `content` row from the
+canonical event log with the configured model. The event log, `content`, and FTS
+index are untouched — only the derived vector index is rebuilt.
+
+If `rag.embed_dim` stops matching the existing `vec0` table, engram **refuses to
+start** with an `IncompatibleDatabaseError` rather than silently returning broken
+results — run `eos reembed` (or revert the model/dim) first. Run `./bin/eos-version`
+to see the table dim vs. the configured dim.
 
 The reranker has no such constraint — a cross-encoder emits a scalar score — so
 you can swap it freely at any time.
@@ -87,7 +93,7 @@ you can swap it freely at any time.
 | `Snowflake/snowflake-arctic-embed-s` | CPU | Retrieval-tuned, 384-dim. |
 | `intfloat/e5-small-v2` | CPU | Good, but expects `query:` / `passage:` prefixes that Engram does not add. |
 
-**Requires a schema dim change + full re-embed (and realistically a GPU):**
+**Requires bumping `rag.embed_dim` + `eos reembed` (and realistically a GPU):**
 
 | Model | Dim | Notes |
 |---|---|---|
@@ -122,5 +128,5 @@ rerank.py`, not just a config value.
 1. Edit `rag.embed_model` or `research.reranker_model` in `~/.engram/config.yml`.
 2. For a reranker, or a same-dimension (384) embedder, restart the daemons — the
    models lazy-load on next use.
-3. For a different-dimension embedder, also bump the `FLOAT[NNN]` in the schema,
-   add a migration, and replay the log so every entry is re-embedded.
+3. For a different-dimension embedder, also set `rag.embed_dim` to the new width
+   and run `eos reembed` to rebuild the vector index at that dimension.
