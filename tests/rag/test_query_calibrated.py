@@ -72,6 +72,37 @@ def test_since_filters_old_entries(tmp_path, monkeypatch):
     assert [h.hash for h in hits] == ["new"]
 
 
+def test_until_filters_newer_entries(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    conn = fresh_conn(tmp_path)
+    conn.execute("INSERT INTO content (hash,title,body,source_url,source_tier,fetched_at,"
+                 "confidence,kind,tombstoned) VALUES "
+                 "('old','Old','alpha term',NULL,'manual','2026-01-01T00:00:00Z',0.8,'kb',0)")
+    _add(conn, "new", "New", "alpha term")  # fetched_at 2026-06-10
+    import engram.rag.query as q
+    monkeypatch.setattr(q, "embed_one", lambda s: b"x")
+    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [("old", 0.80), ("new", 0.80)])
+    hits = q.hybrid_search(conn, "alpha", log_retrieval=False, until="2026-03-01T00:00:00Z")
+    assert [h.hash for h in hits] == ["old"]
+
+
+def test_since_and_until_bound_a_window(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    conn = fresh_conn(tmp_path)
+    for h, ts in (("old", "2026-01-01T00:00:00Z"), ("mid", "2026-04-01T00:00:00Z"),
+                  ("new", "2026-09-01T00:00:00Z")):
+        conn.execute("INSERT INTO content (hash,title,body,source_url,source_tier,fetched_at,"
+                     "confidence,kind,tombstoned) VALUES (?,?,?,?,?,?,?,?,0)",
+                     (h, h, "alpha term", None, "manual", ts, 0.8, "kb"))
+    import engram.rag.query as q
+    monkeypatch.setattr(q, "embed_one", lambda s: b"x")
+    monkeypatch.setattr(q, "_vector_hits",
+                        lambda conn, emb, k: [("old", 0.8), ("mid", 0.8), ("new", 0.8)])
+    hits = q.hybrid_search(conn, "alpha", log_retrieval=False,
+                           since="2026-03-01T00:00:00Z", until="2026-08-01T00:00:00Z")
+    assert [h.hash for h in hits] == ["mid"]
+
+
 def test_level_controls_body_length(tmp_path, monkeypatch):
     _stub_cfg(monkeypatch)
     conn = fresh_conn(tmp_path)
