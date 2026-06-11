@@ -69,9 +69,22 @@ def test_watcher_human_edit_sets_protected(conn, tmp_path, monkeypatch):
     (vault / rel).write_text("HUMAN edited body")
     watcher._on_change(conn, rel, str(vault / rel))
 
-    row = conn.execute("SELECT protected, body FROM content WHERE hash = ?", (h,)).fetchone()
-    assert row["protected"] == 1
-    assert row["body"] == "HUMAN edited body"
+    # The edit lands as a new current+protected revision (#55), addressed by the
+    # edited body — not an in-place mutation of the original hash.
+    new_h = content_hash("HUMAN edited body")
+    new = conn.execute(
+        "SELECT protected, body, is_current FROM content WHERE hash = ?", (new_h,)
+    ).fetchone()
+    assert new["protected"] == 1
+    assert new["body"] == "HUMAN edited body"
+    assert new["is_current"] == 1
+    # Original revision is retained, superseded, and left unmutated.
+    old = conn.execute(
+        "SELECT body, is_current, superseded_by FROM content WHERE hash = ?", (h,)
+    ).fetchone()
+    assert old["body"] == "original sourced body"
+    assert old["is_current"] == 0
+    assert old["superseded_by"] == new_h
     # vault_edit event still recorded.
     n = conn.execute("SELECT COUNT(*) FROM events WHERE type = 'vault_edit'").fetchone()[0]
     assert n == 1
