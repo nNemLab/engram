@@ -20,6 +20,7 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
             conn, args["query"],
             top_k=args.get("k") or args.get("top_k"),
             since=args.get("since"),
+            until=args.get("until"),
             level=args.get("level", "snippet"),
             exclude_source_tiers=args.get("exclude_source_tiers"),
             exclude_kinds=args.get("exclude_kinds"),
@@ -43,6 +44,24 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
         return {
             "verdict": verdict,
             "results": results,
+        }
+
+    def timeline(args: dict[str, Any]) -> dict[str, Any]:
+        from ...rag.timeline import reconstruct_timeline
+        entries = reconstruct_timeline(
+            conn,
+            query=args.get("query"),
+            top_k=args.get("k") or args.get("top_k"),
+            since=args.get("since"),
+            until=args.get("until"),
+            limit=args.get("limit", 200),
+        )
+        return {
+            "count": len(entries),
+            "timeline": [
+                {"id": e.id, "ts": e.ts, "event": e.event, "payload": e.payload}
+                for e in entries
+            ],
         }
 
     return {
@@ -85,6 +104,11 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
                         "type": "string",
                         "description": "ISO-8601 datetime; exclude content fetched before this.",
                     },
+                    "until": {
+                        "type": "string",
+                        "description": "ISO-8601 datetime; exclude content fetched at or after "
+                                       "this. Combine with `since` for a bounded time window.",
+                    },
                     "exclude_source_tiers": {
                         "type": "array", "items": {"type": "string"},
                         "description": "Tiers to filter out (e.g. ['agent-derived']).",
@@ -96,5 +120,39 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
                 },
             },
             "handler": query,
+        },
+        "rag.timeline": {
+            "description": "Reconstruct an episodic timeline: walk content "
+                           "lifecycle events (ingested / vault_edit / superseded) in "
+                           "chronological order. Pass `query` to scope to a topic's content "
+                           "lineage, or `since`/`until` to bound a time window. Answers "
+                           "'how did this knowledge evolve, and in what order?' — which the "
+                           "semantic rag.query surface cannot.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Optional topic; scopes the walk to the content this "
+                                       "topic surfaces and its revision lineage. Omit for an "
+                                       "unscoped chronological walk.",
+                    },
+                    "k": {"type": "integer", "default": 12,
+                          "description": "Topic-search fan-out used to seed the lineage "
+                                         "(ignored when `query` is omitted)."},
+                    "since": {
+                        "type": "string",
+                        "description": "ISO-8601 datetime; exclude events before this (inclusive).",
+                    },
+                    "until": {
+                        "type": "string",
+                        "description": "ISO-8601 datetime; exclude events at or after this "
+                                       "(exclusive).",
+                    },
+                    "limit": {"type": "integer", "default": 200,
+                              "description": "Max events to return (oldest-first)."},
+                },
+            },
+            "handler": timeline,
         },
     }
