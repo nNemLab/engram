@@ -66,6 +66,12 @@ export ENGRAM_CONFIG="$root/config.yml"
 echo "==> Initializing database (applies schema, creates vec0 table)"
 "$venv/bin/python" -c "from engram.common.db import get_connection; c = get_connection(); c.close(); print('  ok')"
 
+# Seed the starter playbooks into playbooks/scratch. The seeder is idempotent
+# (it overwrites). Without this, engram-daily-digest.{service,timer} fails on a
+# fresh install because eos-digest's papermill input (daily-digest.ipynb) is absent.
+echo "==> Seeding starter playbooks"
+"$venv/bin/python" "$src/scripts/seed_starter_playbooks.py"
+
 cat <<EOF
 
 ==> Done.
