@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# Re-embed the live corpus at the configured embedding dimension (issue #43).
+#
+# Use this after changing rag.embed_model / rag.embed_dim in config: the vec0
+# vector table is fixed-width, so a model/dimension change leaves the existing
+# index at the OLD width and retrieval silently breaks until the corpus is
+# re-embedded. This command rebuilds the index deterministically from the
+# canonical event log's `content` bodies — no network, no new dependency (it
+# uses whatever embedder is configured).
+#
+# Safety:
+#   * A snapshot of the current database is written FIRST (backup-before-change).
+#   * The embeddings vec0 table is dropped and recreated at the new width, then
+#     every non-tombstoned content row is re-embedded. Events/content/FTS are
+#     untouched — only the derived vector index is rebuilt.
+#   * Gated behind a typed confirmation (type REEMBED); there is no --yes flag.
+#
+# usage: eos reembed
+set -euo pipefail
+
+venv="${ENGRAM_VENV:-$HOME/.engram/.venv}/bin/python"
+
+# --- Resolve config, snapshot first, then report the planned migration -------
+plan="$("$venv" - <<'PY'
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+from engram import maintenance
+from engram.common import db as dbmod
+from engram.common.config import load_config
+
+cfg = load_config()
+db_path = cfg.db_path
+new_dim = cfg.rag.embed_dim
+model = cfg.rag.embed_model
+
+if not db_path.exists():
+    print("ERR\tdatabase not initialized (run ./bin/eos-init)", file=sys.stderr)
+    sys.exit(2)
+
+# Inspect the current table width WITHOUT tripping the compatibility guard:
+# open raw (sqlite-vec loaded, no init_schema/guard) since config already names
+# the NEW dimension while the on-disk table is still the OLD one.
+conn = dbmod._connect(db_path)
+try:
+    cur_dim = maintenance._embeddings_dim(conn)
+finally:
+    conn.close()
+
+# Snapshot the live DB before we touch the index.
+ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+snap = db_path.with_name(f"{db_path.name}.pre-reembed-{ts}.sqlite")
+maintenance.snapshot(db_path, snap)
+
+print(f"OK\t{db_path}\t{cur_dim}\t{new_dim}\t{model}\t{snap}")
+PY
+)"
+
+status="${plan%%$'\t'*}"
+if [[ "$status" != "OK" ]]; then
+    echo "error: ${plan#*$'\t'}" >&2
+    exit 1
+fi
+IFS=$'\t' read -r _ db_path cur_dim new_dim model snap <<<"$plan"
+
+echo "==> Engram re-embed (#43)"
+echo "    database     : $db_path"
+echo "    current dim  : ${cur_dim:-<none>}"
+echo "    target dim   : $new_dim"
+echo "    embed model  : $model"
+echo "    snapshot     : $snap  (written)"
+echo
+if [[ "${cur_dim:-}" == "$new_dim" ]]; then
+    echo "Note: the table is already $new_dim-dim; re-embedding will rebuild it in place."
+    echo
+fi
+echo "This will drop and rebuild the embeddings vector index at $new_dim-dim,"
+echo "re-embedding every live content row with the configured model. The event"
+echo "log, content, and FTS index are NOT modified. A snapshot was already saved"
+echo "above; restore it with 'eos restore' if anything looks wrong afterward."
+echo
+read -r -p "Type 'REEMBED' to proceed (anything else aborts): " confirm || confirm=""
+if [[ "$confirm" != "REEMBED" ]]; then
+    echo "Aborted. The snapshot remains at: $snap"
+    exit 1
+fi
+
+# --- Perform the re-embed ----------------------------------------------------
+"$venv" - <<'PY'
+from engram import maintenance
+from engram.common import db as dbmod
+from engram.common.config import load_config
+from engram.rag.chunk import embed_char_cap
+from engram.rag.embed import embed_many
+
+cfg = load_config()
+conn = dbmod._connect(cfg.db_path)  # raw: bypass the dim-mismatch guard mid-migration
+try:
+    report = maintenance.reembed(
+        conn,
+        embed_many,
+        cfg.rag.embed_dim,
+        # Match the live ingest path's doc-level truncation so a reembed
+        # reproduces exactly what re-ingesting would compute.
+        embed_char_cap=embed_char_cap(cfg.rag.chunk_size_tokens),
+    )
+finally:
+    conn.close()
+
+print()
+print("==> Re-embed complete")
+print(f"    previous dim       : {report['previous_dim']}")
+print(f"    new dim            : {report['new_dim']}")
+print(f"    content rows total : {report['content_total']}")
+print(f"    embedded (live)    : {report['embedded']}")
+print(f"    skipped (tombstone): {report['skipped_tombstoned']}")
+print()
+print("Run 'eos version' to confirm the table and config dims now match, and")
+print("'eos verify' to check index integrity.")
+PY

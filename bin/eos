@@ -24,6 +24,7 @@ commands:
   snapshot    Write a consistent backup of the event log (VACUUM INTO)
   verify      Check the event log for corruption / broken invariants
   restore     Restore the event log from a verified snapshot
+  reembed     Rebuild the vector index at the configured embedding dimension
   uninstall   Remove engram (optional DB export, then teardown)
 EOF
     exit 1

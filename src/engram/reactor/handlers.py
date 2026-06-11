@@ -26,7 +26,7 @@ def on_ingested(conn: sqlite3.Connection, evt: event_log.Event) -> None:
     if not chunks:
         return
     # Single doc-level embedding for now (chunk-level retrieval is a follow-up).
-    emb = embedder.embed_one(row["body"][: 8 * cfg.rag.chunk_size_tokens * 4])
+    emb = embedder.embed_one(chunker.embed_prefix(row["body"], cfg.rag.chunk_size_tokens))
     conn.execute(
         "INSERT OR REPLACE INTO embeddings (content_hash, embedding) VALUES (?, ?)",
         (h, emb),

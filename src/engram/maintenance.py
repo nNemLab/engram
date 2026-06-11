@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -337,4 +338,130 @@ def restore(
         "restored_from": snapshot_path,
         "previous_backup": previous_backup,
         "db_path": db_path,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# re-embed (embedding-model / dimension migration — issue #43)
+# --------------------------------------------------------------------------- #
+class ReembedError(RuntimeError):
+    """Raised when a re-embed cannot complete safely (e.g. wrong vector width)."""
+
+
+def _embeddings_dim(conn: sqlite3.Connection) -> int | None:
+    """Vector width of the existing `embeddings` table, or None if absent.
+
+    Mirrors common.db._embeddings_table_dim but kept local so this module stays
+    path-explicit and free of config/connection coupling.
+    """
+    import re
+
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'embeddings'"
+    ).fetchone()
+    if not row or not row["sql"]:
+        return None
+    m = re.search(r"FLOAT\[(\d+)\]", row["sql"])
+    return int(m.group(1)) if m else None
+
+
+def reembed(
+    conn: sqlite3.Connection,
+    embed_many: Callable[[Sequence[str]], list[bytes]],
+    new_dim: int,
+    *,
+    batch_size: int = 64,
+    embed_char_cap: int | None = None,
+) -> dict[str, Any]:
+    """Re-embed the live corpus at `new_dim`, replacing the `embeddings` table.
+
+    Deterministic, in-place migration for an embedder/dimension change (issue
+    #43). The canonical event log is the source of truth; embeddings are a
+    derived index, so they can be rebuilt from `content` bodies at will:
+
+      1. Drop the existing `embeddings` vec0 table and recreate it at `new_dim`.
+      2. Stream every non-tombstoned `content` row, embed its body via the
+         injected `embed_many`, and insert keyed by `content.hash`. Tombstoned
+         rows are skipped — they are never retrieved, so they need no vector.
+
+    The embedder is injected (not imported) so this stays free of the heavy
+    `[rag]` / sentence-transformers dependency: the `bin/` wrapper passes the
+    real `engram.rag.embed.embed_many`; tests pass a deterministic fake.
+
+    `embed_char_cap`, if given, truncates each body to that many leading
+    characters before embedding — matching the live ingest path, which embeds
+    only `chunk.embed_prefix(body, chunk_size_tokens)`. Passing it (as
+    `bin/eos-reembed` does, via `chunk.embed_char_cap(cfg.rag.chunk_size_tokens)`)
+    keeps reembed-produced vectors identical to what re-ingesting would compute.
+    The cap is threaded as a plain int so this stays config- and torch-free.
+
+    Width is validated against `new_dim` before any insert, so a mis-wired
+    embedder fails loud (ReembedError) instead of silently writing a table the
+    compatibility guard would later reject.
+
+    The drop+recreate+insert sequence runs inside a single explicit transaction.
+    The DB connects in autocommit mode (`isolation_level=None`), so without this
+    each statement would commit on its own and a crash mid-reembed could leave a
+    dropped or half-rebuilt index. vec0 DDL is transactional in SQLite, so on any
+    failure (including a width-mismatch `ReembedError`) we ROLLBACK and the OLD
+    index is left fully intact.
+
+    Caller responsibilities (handled by `bin/eos-reembed`): snapshot first, and
+    update `rag.embed_model` / `rag.embed_dim` in config so the new table width
+    matches what daemons will compute on the next start.
+
+    Returns {"new_dim", "previous_dim", "content_total", "embedded",
+    "skipped_tombstoned"}.
+    """
+    previous_dim = _embeddings_dim(conn)
+
+    rows = conn.execute(
+        "SELECT hash, body FROM content WHERE tombstoned = 0 ORDER BY rowid"
+    ).fetchall()
+    content_total = conn.execute("SELECT COUNT(*) FROM content").fetchone()[0]
+
+    def _prefix(body: str) -> str:
+        return body if embed_char_cap is None else body[:embed_char_cap]
+
+    conn.execute("BEGIN")
+    try:
+        conn.execute("DROP TABLE IF EXISTS embeddings")
+        conn.execute(
+            f"CREATE VIRTUAL TABLE embeddings USING vec0("
+            f"content_hash TEXT PRIMARY KEY, embedding FLOAT[{new_dim}])"
+        )
+
+        embedded = 0
+        expected_bytes = new_dim * 4  # float32
+        for start in range(0, len(rows), batch_size):
+            batch = rows[start : start + batch_size]
+            vectors = embed_many([_prefix(r["body"]) for r in batch])
+            if len(vectors) != len(batch):
+                raise ReembedError(
+                    f"embedder returned {len(vectors)} vectors for {len(batch)} inputs"
+                )
+            for row, vec in zip(batch, vectors, strict=True):
+                if len(vec) != expected_bytes:
+                    raise ReembedError(
+                        f"embedder produced a {len(vec) // 4}-dim vector but the new "
+                        f"table is {new_dim}-dim; aborting before writing a mismatched "
+                        f"index (content hash {row['hash']})"
+                    )
+                conn.execute(
+                    "INSERT OR REPLACE INTO embeddings (content_hash, embedding) "
+                    "VALUES (?, ?)",
+                    (row["hash"], vec),
+                )
+                embedded += 1
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+    return {
+        "new_dim": new_dim,
+        "previous_dim": previous_dim,
+        "content_total": int(content_total),
+        "embedded": embedded,
+        "skipped_tombstoned": int(content_total) - len(rows),
     }

@@ -7,6 +7,31 @@ from dataclasses import dataclass
 _HEADING = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 # Approx: ~4 chars per token. Cheap heuristic, no tokenizer dep.
 _CHARS_PER_TOKEN = 4
+# Doc-level embedding caps the body at this many chunks' worth of characters
+# (8 * chunk_size_tokens tokens). Keeping it here means the live ingest path and
+# the reembed migration truncate identically — see embed_char_cap / embed_prefix.
+_EMBED_CHUNK_SPAN = 8
+
+
+def embed_char_cap(size_tokens: int) -> int:
+    """Character cap for a doc-level embedding at `size_tokens` chunk size.
+
+    Single source of truth for the truncation width shared by the live ingest
+    handler and the reembed migration, so the two can't drift. Pure arithmetic —
+    no config or model import — so reembed stays torch-free.
+    """
+    return _EMBED_CHUNK_SPAN * size_tokens * _CHARS_PER_TOKEN
+
+
+def embed_prefix(text: str, size_tokens: int) -> str:
+    """The leading slice of `text` that the embedder actually sees.
+
+    Both the live ingest path (handlers.on_ingested) and the corpus reembed
+    migration must embed the SAME prefix, or a reembed produces vectors that a
+    re-ingest would not reproduce. Routing both through this helper guarantees
+    parity.
+    """
+    return text[: embed_char_cap(size_tokens)]
 
 
 @dataclass
