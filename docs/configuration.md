@@ -87,21 +87,31 @@ you can swap it freely at any time.
 
 | Model | Lane | Notes |
 |---|---|---|
-| `sentence-transformers/all-MiniLM-L6-v2` | CPU | Current default. Fast, no prompt prefixes, solid baseline. |
+| `sentence-transformers/all-MiniLM-L6-v2` | CPU | Current default. Fast, no prompt prefixes, solid baseline (but only a 256-token context). |
+| `ibm-granite/granite-embedding-small-english-r2` | CPU | ModernBERT (native — no `trust_remote_code`), prefix-free, 8192-token context, Apache-2.0. Strong modern 384-dim upgrade over MiniLM. |
 | `BAAI/bge-small-en-v1.5` | CPU | Stronger retrieval than MiniLM; benefits from a query instruction but works without. |
 | `thenlper/gte-small` | CPU | Strong small general model; no prefixes needed. |
 | `Snowflake/snowflake-arctic-embed-s` | CPU | Retrieval-tuned, 384-dim. |
 | `intfloat/e5-small-v2` | CPU | Good, but expects `query:` / `passage:` prefixes that Engram does not add. |
 
-**Requires bumping `rag.embed_dim` + `eos reembed` (and realistically a GPU):**
+**Requires bumping `rag.embed_dim` + `eos reembed`:**
 
-| Model | Dim | Notes |
-|---|---|---|
-| `BAAI/bge-large-en-v1.5` | 1024 | Strong English retrieval. |
-| `thenlper/gte-large` | 1024 | General-purpose. |
-| `mixedbread-ai/mxbai-embed-large-v1` | 1024 | Top-tier open English embedder. |
-| `BAAI/bge-m3` | 1024 | Multilingual, long-context (8k tokens). |
-| `Qwen/Qwen3-Embedding-0.6B` | 1024 | 2025 SOTA-class, multilingual; small enough for a modest GPU. |
+| Model | Dim | Lane | Notes |
+|---|---|---|---|
+| `ibm-granite/granite-embedding-english-r2` | 768 | CPU | ModernBERT (native — no `trust_remote_code`), prefix-free, 8192-token context, Apache-2.0. Strong CPU upgrade over the 384-dim defaults; the recommended quality step that still runs on CPU. |
+| `BAAI/bge-large-en-v1.5` | 1024 | GPU | Strong English retrieval. |
+| `thenlper/gte-large` | 1024 | GPU | General-purpose. |
+| `mixedbread-ai/mxbai-embed-large-v1` | 1024 | GPU | Top-tier open English embedder. |
+| `BAAI/bge-m3` | 1024 | GPU | Multilingual, long-context (8k tokens). |
+| `Qwen/Qwen3-Embedding-0.6B` | 1024 | GPU | 2025 SOTA-class, multilingual; small enough for a modest GPU. |
+
+> **Not supported:** models that require `trust_remote_code=True` (e.g. the
+> `Alibaba-NLP/gte-*-en-v1.5` family, `nomic-embed-text-v1.5`, `jina-embeddings-v3`).
+> Engram's loader calls `SentenceTransformer(name)` without that flag, so pick a
+> model with a natively-supported architecture (the ModernBERT-based granite-r2
+> models give long context without it). Models needing query/document instruction
+> prefixes (e.g. `intfloat/e5-*`, EmbeddingGemma) also underperform, since the
+> embedder contract adds no prefixes.
 
 The bigger `Qwen3-Embedding-4B/8B` and `nvidia/NV-Embed-v2` top the MTEB charts
 but are GPU-only and overkill for a single-user KB.
