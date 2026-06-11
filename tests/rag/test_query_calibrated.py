@@ -114,3 +114,34 @@ def test_level_controls_body_length(tmp_path, monkeypatch):
     full = q.hybrid_search(conn, "word", log_retrieval=False, level="full")[0]
     assert len(snip.body) < len(full.body)
     assert len(snip.body) <= 320
+
+
+def test_tier_weight_falls_back_to_defaults_then_half():
+    """A tier absent from config must fall back to the built-in default weight,
+    not flatten to 0.5; an explicit config value overrides; unknown -> 0.5."""
+    import engram.rag.query as q
+    # Empty config -> built-in defaults (peer-reviewed > agent-derived).
+    assert q._tier_weight({}, "peer-reviewed") == q.DEFAULT_TIER_WEIGHTS["peer-reviewed"]
+    assert q._tier_weight({}, "agent-derived") == q.DEFAULT_TIER_WEIGHTS["agent-derived"]
+    assert q._tier_weight({}, "peer-reviewed") > q._tier_weight({}, "agent-derived")
+    # Config value overrides the default for that tier.
+    assert q._tier_weight({"peer-reviewed": 0.2}, "peer-reviewed") == 0.2
+    # Unknown tier / NULL -> neutral 0.5.
+    assert q._tier_weight({}, "made-up-tier") == 0.5
+    assert q._tier_weight({}, None) == 0.5
+
+
+def test_peer_reviewed_outranks_agent_derived_by_default(tmp_path, monkeypatch):
+    """With source_tier_weights unset, an authoritative tier must still outrank a
+    lower one at equal relevance/confidence (regression: tier was a 0.5 no-op)."""
+    _stub_cfg(monkeypatch)  # source_tier_weights = {}
+    conn = fresh_conn(tmp_path)
+    _add(conn, "h1", "A", "alpha shared term", tier="agent-derived", conf=0.8)
+    _add(conn, "h2", "B", "alpha shared term", tier="peer-reviewed", conf=0.8)
+    import engram.rag.query as q
+    monkeypatch.setattr(q, "embed_one", lambda s: b"x")
+    # Equal dense sim; h1 even gets the better dense rank — tier must still flip it.
+    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [("h1", 0.80), ("h2", 0.80)])
+    hits = q.hybrid_search(conn, "alpha", log_retrieval=False)
+    order = [h.hash for h in hits]
+    assert order.index("h2") < order.index("h1"), "peer-reviewed should outrank agent-derived"
