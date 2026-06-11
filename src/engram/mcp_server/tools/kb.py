@@ -98,6 +98,16 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
         return {"results": results,
                 "tombstoned_count": sum(1 for r in results if r["outcome"] == "tombstoned")}
 
+    def resolve_supersede(args: dict[str, Any]) -> dict[str, Any]:
+        """Act on a blocked-supersede contradiction against a protected row (#54)."""
+        return dedup.resolve_supersede(
+            conn,
+            args["hash"],
+            args.get("choice"),
+            tombstone_upstream=bool(args.get("tombstone_upstream", True)),
+            actor=args.get("actor", "human"),
+        )
+
     def flag_contradiction(args: dict[str, Any]) -> dict[str, Any]:
         cur = conn.execute(
             "INSERT INTO contradictions (hash_a, hash_b, detected_by) VALUES (?, ?, ?)",
@@ -177,6 +187,27 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
                 },
             },
             "handler": tombstone,
+        },
+        "kb.resolve_supersede": {
+            "description": "Resolve a blocked-supersede contradiction on a human-edited "
+                           "(protected) sourced row. 'accept_upstream' promotes the pending "
+                           "upstream revision to current, re-projects the vault file, clears "
+                           "protection, and marks the contradiction resolved (kept_b). "
+                           "'keep_mine' keeps the human version, marks it resolved (kept_a), and "
+                           "by default tombstones the rejected upstream revision. Pass the "
+                           "protected row's hash (the contradiction's hash_a).",
+            "input_schema": {
+                "type": "object", "required": ["hash", "choice"],
+                "properties": {
+                    "hash":   {"type": "string",
+                               "description": "Hash of the protected (human) row — hash_a of the contradiction."},
+                    "choice": {"type": "string", "enum": ["accept_upstream", "keep_mine"]},
+                    "tombstone_upstream": {"type": "boolean", "default": True,
+                                           "description": "keep_mine only: tombstone the rejected upstream revision."},
+                    "actor":  {"type": "string", "default": "human"},
+                },
+            },
+            "handler": resolve_supersede,
         },
         "kb.flag_contradiction": {
             "description": "Flag two content hashes as contradicting; emits contradicted event.",
