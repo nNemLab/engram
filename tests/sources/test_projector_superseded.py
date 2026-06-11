@@ -79,3 +79,52 @@ def test_handle_superseded_overwrites_vault_path(conn, tmp_path):
         "SELECT vault_path FROM vault_state WHERE content_hash=?", (r2.hash,)
     ).fetchone()
     assert new_state["vault_path"] == first_path
+
+
+def test_handle_superseded_projects_fresh_when_no_old_vault_state(conn, tmp_path):
+    """#54 fix: if hash_old has no vault_state (was never projected), the
+    superseded handler must still project hash_new fresh — vault file + vault_state."""
+    from engram import log as event_log
+    from engram.dedup import content_hash
+    from engram.projector.projector import _handle_event
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    kind_dirs = {"research": "030-research"}
+
+    h_old = content_hash("old body")
+    h_new = content_hash("new current body")
+    # Both rows exist in content; the OLD one has NO vault_state.
+    conn.execute(
+        "INSERT INTO content (hash, body, title, source_url, source_tier, confidence, "
+        "kind, revision, is_current) "
+        "VALUES (?, 'old body', 'T', 'https://x/p', 'vendor-doc', 0.7, 'research', 1, 0)",
+        (h_old,),
+    )
+    conn.execute(
+        "INSERT INTO content (hash, body, title, source_url, source_tier, confidence, "
+        "kind, revision, is_current) "
+        "VALUES (?, 'new current body', 'T', 'https://x/p', 'vendor-doc', 0.7, 'research', 2, 1)",
+        (h_new,),
+    )
+    event_log.append(
+        conn, "superseded",
+        {"hash_old": h_old, "hash_new": h_new, "source_url": "https://x/p"},
+        actor="human",
+    )
+    conn.commit()
+
+    sup_evt = list(event_log.since(conn, 0, types=["superseded"]))[-1]
+    _handle_event(conn, vault, sup_evt, kind_dirs)
+
+    # New row got a vault file and a vault_state row.
+    state = conn.execute(
+        "SELECT vault_path FROM vault_state WHERE content_hash=?", (h_new,)
+    ).fetchone()
+    assert state is not None
+    rel = state["vault_path"]
+    assert "new current body" in (vault / rel).read_text()
+    # content.vault_path is no longer NULL for the new row.
+    assert conn.execute(
+        "SELECT vault_path FROM content WHERE hash=?", (h_new,)
+    ).fetchone()["vault_path"] == rel

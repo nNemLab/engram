@@ -132,7 +132,7 @@ def resolve_supersede(
     human_hash: str,
     choice: Literal["accept_upstream", "keep_mine"],
     *,
-    tombstone_upstream: bool = True,
+    tombstone_upstream: bool = False,
     actor: str = "human",
 ) -> dict[str, Any]:
     """Act on a blocked-supersede contradiction raised against a protected row (#54).
@@ -149,8 +149,12 @@ def resolve_supersede(
 
     choice='keep_mine':
         Leave the human row current and protected; mark the contradiction resolved with
-        resolution='kept_a'. By default tombstone the rejected upstream revision
-        (tombstone_upstream=False keeps it as a non-current revision for audit).
+        resolution='kept_a'. By default the rejected upstream revision is retained as a
+        non-current revision (tombstone_upstream=False) — this is the durable path: a
+        re-poll of the same unchanged upstream bytes resolves to `exact_dup` and raises
+        no fresh contradiction. Passing tombstone_upstream=True purges the upstream
+        revision, but then an identical upstream re-poll re-enters the protected branch
+        and re-raises the contradiction every cycle.
 
     Returns a dict with `outcome` on success or `error` on failure. Idempotent in the
     sense that a second call finds no unresolved contradiction and errors cleanly.

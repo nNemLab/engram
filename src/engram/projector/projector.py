@@ -88,6 +88,12 @@ def _handle_event(conn: sqlite3.Connection, vault: Path, evt: event_log.Event,
             "SELECT vault_path, rendered_body FROM vault_state WHERE content_hash = ?",
             (hash_old,),
         ).fetchone()
+        if not (old_state and old_state["vault_path"]):
+            # No prior vault file for hash_old (no vault_state) — project the
+            # now-current new row fresh so it still lands in the vault.
+            if hash_new:
+                _project_one(conn, vault, hash_new, kind_dirs)
+            return
         if old_state and old_state["vault_path"]:
             old_path = old_state["vault_path"]
             new_row = conn.execute(

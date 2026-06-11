@@ -57,6 +57,17 @@ def test_tool_keep_mine(resolve):
     h_human, h_up = _blocked_state(conn)
     out = handler({"hash": h_human, "choice": "keep_mine"})
     assert out["outcome"] == "keep_mine"
+    # Default retains the rejected upstream revision (durable re-poll path).
+    assert conn.execute(
+        "SELECT tombstoned FROM content WHERE hash = ?", (h_up,)
+    ).fetchone()["tombstoned"] == 0
+
+
+def test_tool_keep_mine_can_purge(resolve):
+    conn, handler = resolve
+    h_human, h_up = _blocked_state(conn)
+    out = handler({"hash": h_human, "choice": "keep_mine", "tombstone_upstream": True})
+    assert out["outcome"] == "keep_mine"
     assert conn.execute(
         "SELECT tombstoned FROM content WHERE hash = ?", (h_up,)
     ).fetchone()["tombstoned"] == 1

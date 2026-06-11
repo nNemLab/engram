@@ -96,9 +96,9 @@ def test_keep_mine_resolves_kept_a(conn):
     assert human["protected"] == 1
     assert human["superseded_by"] is None
 
-    # Pending upstream revision tombstoned by default.
+    # Default retains the rejected upstream revision (durable re-poll path).
     up = conn.execute("SELECT tombstoned FROM content WHERE hash = ?", (h_up,)).fetchone()
-    assert up["tombstoned"] == 1
+    assert up["tombstoned"] == 0
 
     c = conn.execute("SELECT resolved, resolution FROM contradictions").fetchone()
     assert c["resolved"] == 1
@@ -108,13 +108,38 @@ def test_keep_mine_resolves_kept_a(conn):
     assert conn.execute("SELECT COUNT(*) FROM events WHERE type='superseded'").fetchone()[0] == 0
 
 
-def test_keep_mine_can_retain_upstream_revision(conn):
+def test_keep_mine_can_purge_upstream_revision(conn):
     from engram.dedup import resolve_supersede
 
     h_human, h_up = _blocked_state(conn)
-    resolve_supersede(conn, h_human, "keep_mine", tombstone_upstream=False, actor="human")
+    resolve_supersede(conn, h_human, "keep_mine", tombstone_upstream=True, actor="human")
     up = conn.execute("SELECT tombstoned FROM content WHERE hash = ?", (h_up,)).fetchone()
-    assert up["tombstoned"] == 0
+    assert up["tombstoned"] == 1
+
+
+def test_keep_mine_default_is_durable_on_repoll(conn):
+    """#54 fix: with the default (retain upstream), re-polling the SAME upstream
+    bytes resolves to exact_dup and raises NO fresh contradiction. Purging would
+    instead re-enter the protected branch and re-raise on every cycle."""
+    from engram.dedup import gate, resolve_supersede
+
+    url = "https://x/p"
+    h_human, h_up = _blocked_state(conn, url=url)
+    resolve_supersede(conn, h_human, "keep_mine", actor="human")  # default retains upstream
+
+    contradictions_before = conn.execute(
+        "SELECT COUNT(*) FROM contradictions"
+    ).fetchone()[0]
+
+    # Poller re-fetches identical upstream bytes.
+    r = gate(conn, body="new upstream bytes", source_url=url,
+             source_tier="vendor-doc", kind="research", actor="poller")
+    assert r.outcome == "exact_dup"
+
+    contradictions_after = conn.execute(
+        "SELECT COUNT(*) FROM contradictions"
+    ).fetchone()[0]
+    assert contradictions_after == contradictions_before
 
 
 def test_resolve_unknown_hash_errors(conn):

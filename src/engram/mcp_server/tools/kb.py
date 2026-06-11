@@ -104,7 +104,7 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
             conn,
             args["hash"],
             args.get("choice"),
-            tombstone_upstream=bool(args.get("tombstone_upstream", True)),
+            tombstone_upstream=bool(args.get("tombstone_upstream", False)),
             actor=args.get("actor", "human"),
         )
 
@@ -194,7 +194,8 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
                            "upstream revision to current, re-projects the vault file, clears "
                            "protection, and marks the contradiction resolved (kept_b). "
                            "'keep_mine' keeps the human version, marks it resolved (kept_a), and "
-                           "by default tombstones the rejected upstream revision. Pass the "
+                           "by default retains the rejected upstream as a non-current revision so a "
+                           "re-poll of the same upstream bytes is a clean exact_dup. Pass the "
                            "protected row's hash (the contradiction's hash_a).",
             "input_schema": {
                 "type": "object", "required": ["hash", "choice"],
@@ -202,8 +203,11 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
                     "hash":   {"type": "string",
                                "description": "Hash of the protected (human) row — hash_a of the contradiction."},
                     "choice": {"type": "string", "enum": ["accept_upstream", "keep_mine"]},
-                    "tombstone_upstream": {"type": "boolean", "default": True,
-                                           "description": "keep_mine only: tombstone the rejected upstream revision."},
+                    "tombstone_upstream": {"type": "boolean", "default": False,
+                                           "description": "keep_mine only: purge the rejected upstream revision. "
+                                                          "Default false retains it as a non-current revision so a "
+                                                          "re-poll is a clean exact_dup; true purges it, but then an "
+                                                          "identical upstream re-poll re-raises the contradiction."},
                     "actor":  {"type": "string", "default": "human"},
                 },
             },
