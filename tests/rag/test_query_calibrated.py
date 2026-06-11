@@ -145,3 +145,36 @@ def test_peer_reviewed_outranks_agent_derived_by_default(tmp_path, monkeypatch):
     hits = q.hybrid_search(conn, "alpha", log_retrieval=False)
     order = [h.hash for h in hits]
     assert order.index("h2") < order.index("h1"), "peer-reviewed should outrank agent-derived"
+
+
+def test_relevant_outranks_higher_confidence_irrelevant(tmp_path, monkeypatch):
+    """A clearly more dense-relevant hit must rank above a clearly less-relevant
+    one even when the latter has higher confidence. RRF flattens relevance to a
+    near-constant; multiplying a wide confidence prior onto it let an irrelevant
+    high-confidence note win. Relevance magnitude must dominate clear gaps."""
+    _stub_cfg(monkeypatch)
+    conn = fresh_conn(tmp_path)
+    _add(conn, "rel", "Relevant", "zzz", conf=0.5)   # body shares no query term
+    _add(conn, "irr", "Irrelevant", "zzz", conf=0.9)  # higher confidence prior
+    import engram.rag.query as q
+    monkeypatch.setattr(q, "embed_one", lambda s: b"x")
+    # rel is clearly more relevant (0.60 vs 0.30); query term absent from bodies
+    # so BM25 contributes nothing and dense magnitude is the only relevance signal.
+    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [("rel", 0.60), ("irr", 0.30)])
+    hits = q.hybrid_search(conn, "qqqq", log_retrieval=False)
+    order = [h.hash for h in hits]
+    assert order.index("rel") < order.index("irr"), \
+        "dense-more-relevant must outrank higher-confidence-but-less-relevant"
+
+
+def test_bm25_matches_on_any_term_not_conjunction(tmp_path, monkeypatch):
+    """A multi-word natural-language query must still match docs containing SOME
+    of its terms. Quoting tokens space-separated AND-s them in FTS5, so no doc
+    matched a full sentence and BM25 silently returned nothing."""
+    _stub_cfg(monkeypatch)
+    conn = fresh_conn(tmp_path)
+    _add(conn, "h1", "Quant", "quantization fp4 nvfp4 checkpoints")
+    import engram.rag.query as q
+    hits = q._bm25_hits(conn, "How does vLLM quantization support FP4 checkpoints?", 10)
+    assert any(h == "h1" for h, _ in hits), \
+        "BM25 must match on OR of query terms, not require all of them"

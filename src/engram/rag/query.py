@@ -44,15 +44,18 @@ def _fts_match_expr(query: str) -> str | None:
     (`?`, `'`, `.`, `-`, quotes, parens, bare AND/OR/NOT, `*`, …) raises syntax
     errors — which breaks retrieval (and the grounding daemon) on the kinds of
     natural-language prompts users actually type. We extract word tokens and
-    quote each as an FTS5 string literal: that matches them as plain terms
-    (implicit AND, the prior behaviour) while neutralising every operator.
-    Returns None when there are no usable tokens (empty / punctuation-only).
+    quote each as an FTS5 string literal, joined with explicit `OR`: a doc
+    matches if it contains ANY query term, and FTS5's bm25 ranking then favours
+    docs matching more (and rarer) terms. Space-joining instead ANDs every
+    token — so a full sentence (including stopwords like "for"/"and") matched
+    nothing and BM25 silently returned zero hits. Returns None when there are
+    no usable tokens (empty / punctuation-only).
     """
     tokens = _FTS_TOKEN.findall(query)
     if not tokens:
         return None
     # Tokens are word characters only, so they never contain a `"` to escape.
-    return " ".join(f'"{t}"' for t in tokens)
+    return " OR ".join(f'"{t}"' for t in tokens)
 
 
 def _bm25_hits(conn: sqlite3.Connection, query: str, k: int) -> list[tuple[str, float]]:
@@ -174,7 +177,14 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = N
         tier_w = _tier_weight(weights, r["source_tier"])
         decay = _confidence_decay(r["fetched_at"], half_life)
         uf = usage_factor(conn, h, weight=cfg.grounding.usage_weight)
-        ranked_score = rrf_score * (r["confidence"] or 0.5) * tier_w * decay * uf
+        # Relevance combines the fused rank (recall, incl. BM25-only hits) with
+        # the dense cosine MAGNITUDE. RRF alone collapses relevance to a near-
+        # constant band, letting the confidence/tier/usage priors swamp it — an
+        # irrelevant but high-confidence note could outrank the dense-best hit.
+        # Adding dense_sim restores the real spread, so priors only reorder hits
+        # of comparable relevance (tie-break) rather than override clear gaps.
+        relevance = rrf_score + (dense_map.get(h) or 0.0)
+        ranked_score = relevance * (r["confidence"] or 0.5) * tier_w * decay * uf
         hits.append(Hit(
             hash=h, title=r["title"], body=r["body"], score=ranked_score,
             source_url=r["source_url"], confidence=r["confidence"], fetched_at=r["fetched_at"],
