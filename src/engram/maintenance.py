@@ -24,6 +24,7 @@ import sqlite_vec
 
 from .common.time import utcnow_iso
 from .dedup import content_hash
+from .log import canonical_event_hash
 
 
 def _open(db_path: Path) -> sqlite3.Connection:
@@ -48,6 +49,10 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
         ).fetchone()
         is not None
     )
+
+
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(r["name"] == column for r in conn.execute(f"PRAGMA table_info({table})"))
 
 
 # --------------------------------------------------------------------------- #
@@ -102,11 +107,16 @@ def verify(db_path_or_conn: Path | str | sqlite3.Connection) -> dict[str, Any]:
         (skipped gracefully when the table is absent — daemons create it lazily).
       * every embeddings.content_hash exists in content.hash.
       * every non-null content.superseded_by references an existing content.hash.
+      * event_chain — re-walk the tamper-evident event hash chain (#45): for every
+        row carrying an event_hash, recompute it from the stored fields + prev_hash
+        and confirm prev_hash links to the prior chained row's event_hash. Rows
+        predating the 005 migration (event_hash IS NULL) are skipped, so pre-chain
+        history never false-positives. Skipped on pre-005 DBs lacking the column.
       * PRAGMA integrity_check returns 'ok'.
 
     Returns {"ok", "checks":[{name,ok,detail}], "hash_mismatches":[...],
-    "content_checked":N}. `ok` is True only if all checks pass AND there are no
-    hash mismatches.
+    "content_checked":N, "chain_checked":N}. `ok` is True only if all checks pass
+    AND there are no hash mismatches.
     """
     owns_conn = not isinstance(db_path_or_conn, sqlite3.Connection)
     conn = _open(Path(db_path_or_conn)) if owns_conn else db_path_or_conn
@@ -114,6 +124,7 @@ def verify(db_path_or_conn: Path | str | sqlite3.Connection) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
     hash_mismatches: list[str] = []
     content_checked = 0
+    chain_checked = 0
     try:
         # --- hash integrity ---
         for row in conn.execute("SELECT hash, body FROM content"):
@@ -195,6 +206,50 @@ def verify(db_path_or_conn: Path | str | sqlite3.Connection) -> dict[str, Any]:
             else f"{len(dangling_sb)} content row(s) point superseded_by at a missing hash",
         )
 
+        # --- event hash chain (#45) ---
+        if _column_exists(conn, "events", "event_hash"):
+            chain_ok = True
+            chain_detail = ""
+            expected_prev = ""  # genesis marker for the first chained row
+            for row in conn.execute(
+                "SELECT id, ts, type, payload, actor, correlation_id, prev_hash, event_hash "
+                "FROM events WHERE event_hash IS NOT NULL ORDER BY id"
+            ):
+                chain_checked += 1
+                if row["prev_hash"] != expected_prev:
+                    chain_ok = False
+                    chain_detail = f"event id={row['id']}: prev_hash does not link to prior event"
+                    break
+                recomputed = canonical_event_hash(
+                    id=row["id"],
+                    ts=row["ts"],
+                    type=row["type"],
+                    payload=row["payload"],
+                    actor=row["actor"],
+                    correlation_id=row["correlation_id"],
+                    prev_hash=row["prev_hash"],
+                )
+                if recomputed != row["event_hash"]:
+                    chain_ok = False
+                    chain_detail = f"event id={row['id']}: event_hash mismatch (row tampered)"
+                    break
+                expected_prev = row["event_hash"]
+            _check(
+                checks,
+                "event_chain",
+                chain_ok,
+                f"hash chain intact over {chain_checked} event(s)"
+                if chain_ok
+                else chain_detail,
+            )
+        else:
+            _check(
+                checks,
+                "event_chain",
+                True,
+                "event_hash column absent (pre-005 schema) — skipped",
+            )
+
         # --- PRAGMA integrity_check ---
         integ = conn.execute("PRAGMA integrity_check").fetchone()[0]
         _check(
@@ -213,6 +268,7 @@ def verify(db_path_or_conn: Path | str | sqlite3.Connection) -> dict[str, Any]:
         "checks": checks,
         "hash_mismatches": hash_mismatches,
         "content_checked": content_checked,
+        "chain_checked": chain_checked,
     }
 
 

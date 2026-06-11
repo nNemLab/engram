@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 import sqlite_vec
 
+from engram import log as event_log
 from engram import maintenance
 from engram.dedup import content_hash
 
@@ -30,7 +31,13 @@ def _open(path: Path) -> sqlite3.Connection:
 
 
 def _apply_schema(conn: sqlite3.Connection, embed_dim: int = 4) -> None:
-    for fn in ("001_initial.sql", "002_sources_and_revisions.sql", "003_grounding.sql"):
+    for fn in (
+        "001_initial.sql",
+        "002_sources_and_revisions.sql",
+        "003_grounding.sql",
+        "004_protected.sql",
+        "005_event_hash_chain.sql",
+    ):
         conn.executescript((SCHEMA / fn).read_text())
     conn.execute(
         f"CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0("
@@ -208,6 +215,102 @@ def test_verify_detects_cursor_past_max_event(tmp_path):
     assert result["ok"] is False
     cur_check = next(c for c in result["checks"] if c["name"] == "daemon_cursors")
     assert cur_check["ok"] is False
+
+
+# --------------------------------------------------------------------------- #
+# event hash chain (#45)
+# --------------------------------------------------------------------------- #
+def test_verify_passes_on_intact_chain(tmp_path):
+    src = tmp_path / "db.sqlite"
+    conn = _open(src)
+    _apply_schema(conn)
+    for i in range(5):
+        event_log.append(conn, "system", {"i": i}, actor="agent")
+    conn.commit()
+    conn.close()
+
+    result = maintenance.verify(src)
+
+    assert result["ok"] is True, result
+    chain = next(c for c in result["checks"] if c["name"] == "event_chain")
+    assert chain["ok"] is True
+    assert result["chain_checked"] == 5
+
+
+def test_verify_detects_tampered_event_body(tmp_path):
+    src = tmp_path / "db.sqlite"
+    conn = _open(src)
+    _apply_schema(conn)
+    for i in range(5):
+        event_log.append(conn, "system", {"i": i}, actor="agent")
+    # Retroactively edit a chained event's payload, leaving its event_hash stale.
+    conn.execute("UPDATE events SET payload = '{\"i\":999}' WHERE id = 3")
+    conn.commit()
+    conn.close()
+
+    result = maintenance.verify(src)
+
+    assert result["ok"] is False
+    chain = next(c for c in result["checks"] if c["name"] == "event_chain")
+    assert chain["ok"] is False
+
+
+def test_verify_detects_deleted_event_breaks_chain(tmp_path):
+    src = tmp_path / "db.sqlite"
+    conn = _open(src)
+    _apply_schema(conn)
+    for i in range(5):
+        event_log.append(conn, "system", {"i": i}, actor="agent")
+    # Excising a middle event breaks the prev_hash linkage of its successor.
+    conn.execute("DELETE FROM events WHERE id = 3")
+    conn.commit()
+    conn.close()
+
+    result = maintenance.verify(src)
+
+    assert result["ok"] is False
+    chain = next(c for c in result["checks"] if c["name"] == "event_chain")
+    assert chain["ok"] is False
+
+
+def test_verify_skips_pre_chain_rows(tmp_path):
+    # Rows that predate the migration carry NULL event_hash and must NOT
+    # false-positive: the chain starts at the migration boundary.
+    src = tmp_path / "db.sqlite"
+    conn = _open(src)
+    _apply_schema(conn)
+    # Simulate legacy rows: inserted as if before 005, no hash columns set.
+    conn.execute("INSERT INTO events (type, payload, actor) VALUES ('system', '{}', 'agent')")
+    conn.execute("INSERT INTO events (type, payload, actor) VALUES ('system', '{}', 'agent')")
+    # Then chained rows arrive via the normal append path.
+    event_log.append(conn, "system", {"i": 0}, actor="agent")
+    event_log.append(conn, "system", {"i": 1}, actor="agent")
+    conn.commit()
+    conn.close()
+
+    result = maintenance.verify(src)
+
+    assert result["ok"] is True, result
+    chain = next(c for c in result["checks"] if c["name"] == "event_chain")
+    assert chain["ok"] is True
+    assert result["chain_checked"] == 2  # only the two chained rows
+
+
+def test_verify_chain_skipped_when_column_absent(tmp_path):
+    # A pre-005 DB has no event_hash column; the chain check is skipped cleanly.
+    src = tmp_path / "db.sqlite"
+    conn = _open(src)
+    for fn in ("001_initial.sql", "002_sources_and_revisions.sql", "003_grounding.sql"):
+        conn.executescript((SCHEMA / fn).read_text())
+    conn.execute("INSERT INTO events (type, payload, actor) VALUES ('system', '{}', 'agent')")
+    conn.commit()
+    conn.close()
+
+    result = maintenance.verify(src)
+
+    chain = next(c for c in result["checks"] if c["name"] == "event_chain")
+    assert chain["ok"] is True
+    assert "absent" in chain["detail"].lower() or "skipped" in chain["detail"].lower()
 
 
 # --------------------------------------------------------------------------- #
