@@ -31,13 +31,17 @@ def on_ingested(conn: sqlite3.Connection, evt: event_log.Event) -> None:
         "INSERT OR REPLACE INTO embeddings (content_hash, embedding) VALUES (?, ?)",
         (h, emb),
     )
-    # Post-hoc near-dup check, scoped to other entries (exclude self).
-    near = conn.execute(
+    # Post-hoc near-dup check against the nearest OTHER entry. sqlite-vec KNN
+    # requires an explicit `k = ?` constraint and rejects extra non-MATCH
+    # predicates in the same query (so `... AND content_hash != ?` raises). We
+    # fetch the 2 nearest — k=2 covers self plus the closest neighbour — and
+    # drop self in Python.
+    rows = conn.execute(
         "SELECT content_hash, distance FROM embeddings "
-        "WHERE embedding MATCH ? AND content_hash != ? "
-        "ORDER BY distance LIMIT 1",
-        (emb, h),
-    ).fetchone()
+        "WHERE embedding MATCH ? AND k = 2 ORDER BY distance",
+        (emb,),
+    ).fetchall()
+    near = next((r for r in rows if r["content_hash"] != h), None)
     if near:
         sim = 1.0 - float(near["distance"])
         if sim >= cfg.rag.near_dup_threshold:

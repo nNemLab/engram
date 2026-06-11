@@ -11,21 +11,23 @@ Verdict = str  # "STRONG" | "WEAK" | "NONE"
 
 
 def classify(hits: list[Any], cfg: Any) -> Verdict:
-    """Verdict from the top hit's dense similarity and its margin to #2.
+    """Verdict from the strongest dense match and its margin to the next.
 
     cfg needs: tau_high, tau_low, delta. Hits need a `dense_sim: float | None`.
-    A BM25-only top hit (dense_sim is None) can never be STRONG.
+    Read from the dense-BEST hit, not hits[0]: presentation order is set by the
+    confidence/tier/usage re-ranking, which can place a dense-weak hit first —
+    that must not drag the verdict to NONE when a strong dense match is present.
+    With no dense evidence at all (only BM25-only hits) the verdict is NONE.
     """
     if not hits:
         return "NONE"
-    top = hits[0].dense_sim
-    if top is None:
-        # No dense evidence for the best hit; treat as WEAK if any dense signal
-        # exists below, else NONE.
-        return "WEAK" if any(h.dense_sim is not None for h in hits) else "NONE"
+    dense = sorted((h.dense_sim for h in hits if h.dense_sim is not None), reverse=True)
+    if not dense:
+        return "NONE"
+    top = dense[0]
     if top < cfg.tau_low:
         return "NONE"
-    second = next((h.dense_sim for h in hits[1:] if h.dense_sim is not None), 0.0)
+    second = dense[1] if len(dense) > 1 else 0.0
     margin = top - second
     if top >= cfg.tau_high and margin >= cfg.delta:
         return "STRONG"

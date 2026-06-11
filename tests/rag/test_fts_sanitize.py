@@ -21,11 +21,11 @@ GAUNTLET = [
 
 
 @pytest.mark.parametrize("raw,expected", [
-    ("foo bar", '"foo" "bar"'),
-    ("it's fine", '"it" "s" "fine"'),
-    ("foo-bar", '"foo" "bar"'),
-    ("where does it run?", '"where" "does" "it" "run"'),
-    ("café résumé", '"café" "résumé"'),
+    ("foo bar", '"foo" OR "bar"'),
+    ("it's fine", '"it" OR "s" OR "fine"'),
+    ("foo-bar", '"foo" OR "bar"'),
+    ("where does it run?", '"where" OR "does" OR "it" OR "run"'),
+    ("café résumé", '"café" OR "résumé"'),
     ("", None),
     ("   ", None),
     ("?!.", None),

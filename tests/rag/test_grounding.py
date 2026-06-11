@@ -77,3 +77,12 @@ def test_ground_none_on_empty_corpus(tmp_path, monkeypatch):
     from engram.rag.grounding import ground
     out = ground(conn, "anything")
     assert out["verdict"] == "NONE" and out["block"] == "" and out["hashes"] == []
+
+
+def test_verdict_uses_dense_best_not_list_order():
+    """The verdict must reflect the strongest dense match present, regardless of
+    presentation order. Confidence/tier re-ranking can put a dense-weak hit first;
+    that must not drag the verdict to NONE when a strong dense match exists."""
+    hits = [SimpleNamespace(hash="weak", dense_sim=0.30),
+            SimpleNamespace(hash="strong", dense_sim=0.91)]
+    assert classify(hits, G) == "STRONG"
