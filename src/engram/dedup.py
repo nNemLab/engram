@@ -13,7 +13,7 @@ import hashlib
 import re
 import sqlite3
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from . import log as event_log
 from .common.config import load_config
@@ -125,6 +125,111 @@ def _record_supersede_contradiction(
          "detected_by": "poller", "source_url": source_url},
         actor=actor,
     )
+
+
+def resolve_supersede(
+    conn: sqlite3.Connection,
+    human_hash: str,
+    choice: Literal["accept_upstream", "keep_mine"],
+    *,
+    tombstone_upstream: bool = False,
+    actor: str = "human",
+) -> dict[str, Any]:
+    """Act on a blocked-supersede contradiction raised against a protected row (#54).
+
+    Follow-up to #37: the dedup gate keeps a human-edited (`protected`) row current,
+    preserves the rejected upstream change as a non-current revision, and raises one
+    unresolved contradiction (hash_a=human, hash_b=upstream). This resolves it.
+
+    choice='accept_upstream':
+        Promote the pending upstream revision to current, demote the human row
+        (is_current=0, superseded_by=upstream), clear `protected` on the now-current
+        upstream row, emit a `superseded` event so the projector re-projects the vault
+        file, and mark the contradiction resolved with resolution='kept_b'.
+
+    choice='keep_mine':
+        Leave the human row current and protected; mark the contradiction resolved with
+        resolution='kept_a'. By default the rejected upstream revision is retained as a
+        non-current revision (tombstone_upstream=False) — this is the durable path: a
+        re-poll of the same unchanged upstream bytes resolves to `exact_dup` and raises
+        no fresh contradiction. Passing tombstone_upstream=True purges the upstream
+        revision, but then an identical upstream re-poll re-enters the protected branch
+        and re-raises the contradiction every cycle.
+
+    Returns a dict with `outcome` on success or `error` on failure. Idempotent in the
+    sense that a second call finds no unresolved contradiction and errors cleanly.
+    """
+    if choice not in ("accept_upstream", "keep_mine"):
+        return {"error": f"invalid choice: {choice!r} (expected 'accept_upstream' or 'keep_mine')"}
+
+    contradiction = conn.execute(
+        "SELECT id, hash_a, hash_b FROM contradictions "
+        "WHERE hash_a = ? AND resolved = 0 ORDER BY id DESC LIMIT 1",
+        (human_hash,),
+    ).fetchone()
+    if not contradiction:
+        return {"error": f"no unresolved supersede contradiction for hash {human_hash}"}
+
+    cid = contradiction["id"]
+    upstream_hash = contradiction["hash_b"]
+
+    if choice == "accept_upstream":
+        # Promote upstream to current, demote the human row, clear protection so the
+        # upstream row behaves like any normal sourced row from here on.
+        conn.execute(
+            "UPDATE content SET is_current = 0, superseded_by = ? WHERE hash = ?",
+            (upstream_hash, human_hash),
+        )
+        conn.execute(
+            "UPDATE content SET is_current = 1, protected = 0, tombstoned = 0 WHERE hash = ?",
+            (upstream_hash,),
+        )
+        conn.execute(
+            "UPDATE contradictions SET resolved = 1, resolution = 'kept_b' WHERE id = ?",
+            (cid,),
+        )
+        # A `superseded` event re-projects the vault file (human bytes -> upstream).
+        source_url_row = conn.execute(
+            "SELECT source_url, revision FROM content WHERE hash = ?", (upstream_hash,)
+        ).fetchone()
+        event_log.append(
+            conn, "superseded",
+            {
+                "hash_old": human_hash,
+                "hash_new": upstream_hash,
+                "source_url": source_url_row["source_url"] if source_url_row else None,
+                "revision": source_url_row["revision"] if source_url_row else None,
+                "reason": "resolve_accept_upstream",
+            },
+            actor=actor,
+        )
+        conn.commit()
+        return {"outcome": "accept_upstream", "hash": upstream_hash,
+                "contradiction_id": cid, "resolution": "kept_b"}
+
+    # keep_mine: human row is already current+protected; nothing to change there.
+    conn.execute(
+        "UPDATE contradictions SET resolved = 1, resolution = 'kept_a' WHERE id = ?",
+        (cid,),
+    )
+    if tombstone_upstream:
+        conn.execute(
+            "UPDATE content SET tombstoned = 1 WHERE hash = ?", (upstream_hash,)
+        )
+        # Drop the embedding too, if the vec table is present (created at runtime).
+        try:
+            conn.execute("DELETE FROM embeddings WHERE content_hash = ?", (upstream_hash,))
+        except sqlite3.OperationalError:
+            pass
+    event_log.append(
+        conn, "contradiction_resolved",
+        {"hash_a": human_hash, "hash_b": upstream_hash, "resolution": "kept_a",
+         "tombstoned_upstream": bool(tombstone_upstream)},
+        actor=actor,
+    )
+    conn.commit()
+    return {"outcome": "keep_mine", "hash": human_hash,
+            "contradiction_id": cid, "resolution": "kept_a"}
 
 
 def gate(
