@@ -92,7 +92,8 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = N
                   log_retrieval: bool = True,
                   exclude_source_tiers: list[str] | None = None,
                   exclude_kinds: list[str] | None = None,
-                  since: str | None = None, level: str = "snippet") -> list[Hit]:
+                  since: str | None = None, until: str | None = None,
+                  level: str = "snippet") -> list[Hit]:
     cfg = load_config()
     k = top_k or cfg.rag.top_k
     # Over-fetch when filtering so we can still return ~k hits after the cut.
@@ -141,7 +142,13 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = N
             continue
         if r["kind"] in excl_kinds:
             continue
-        if since and (r["fetched_at"] or "") < since:
+        # Time-bounded queries: rows without `fetched_at` (NULL/empty) cannot be
+        # temporally placed, so they are excluded whenever either bound is active.
+        if (since or until) and not r["fetched_at"]:
+            continue
+        if since and r["fetched_at"] < since:
+            continue
+        if until and r["fetched_at"] >= until:
             continue
         tier_w = weights.get(r["source_tier"] or "", 0.5)
         decay = _confidence_decay(r["fetched_at"], half_life)

@@ -24,6 +24,7 @@ CREATE INDEX IF NOT EXISTS idx_events_ts           ON events(ts);
 --   ingested(hash, source, title)
 --   merged(hash_kept, hash_tombstoned, reason)
 --   contradicted(hash_a, hash_b, detected_by)
+--   contradiction_resolved(hash_a, hash_b, resolution, tombstoned_upstream)
 --   retrieved(hash, query)
 --   stale_marked(hash, score)
 --   refresh_requested(hash, source_url)
