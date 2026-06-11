@@ -11,7 +11,7 @@ knowledge in the store came to be — the "what happened, in what order" view
 that the semantic/keyword ``rag.query`` surface cannot express.
 
 This is purely additive: it reads the existing append-only event log and does
-not touch the ranker. An optional ``query`` scopes the walk to the lineage of
+not touch the ranker. An optional ``query`` scopes the walk to events touching
 the content a topic search surfaces; without it, the walk is unscoped (bounded
 only by the optional ``since``/``until`` time window).
 """
@@ -69,9 +69,9 @@ def reconstruct_timeline(
     """Return lifecycle events in chronological order.
 
     query   : optional topic. When given, only events touching the content the
-              topic search surfaces (and that content's revision lineage) are
-              returned. When omitted, all lifecycle events in range are walked.
-    top_k   : how many topic hits to seed the lineage from (defaults to a small
+              topic search surfaces are returned. When omitted, all lifecycle
+              events in range are walked.
+    top_k   : how many topic hits to seed the scope from (defaults to a small
               fixed fan-out). Ignored when ``query`` is None.
     since   : ISO-8601 datetime; exclude events with ts < since (inclusive lower).
     until   : ISO-8601 datetime; exclude events with ts >= until (exclusive upper).

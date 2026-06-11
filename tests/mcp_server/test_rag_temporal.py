@@ -29,7 +29,8 @@ def _engram_config(tmp_path, monkeypatch):
 def _conn():
     c = sqlite3.connect(":memory:")
     c.row_factory = sqlite3.Row
-    for fn in ("001_initial.sql", "002_sources_and_revisions.sql", "003_grounding.sql"):
+    for fn in ("001_initial.sql", "002_sources_and_revisions.sql",
+               "003_grounding.sql", "004_protected.sql"):
         c.executescript((REPO / "schema" / fn).read_text())
     return c
 
@@ -47,6 +48,29 @@ def test_rag_query_until_passthrough(monkeypatch):
     out = ragtool.register(conn)["rag.query"]["handler"](
         {"query": "alpha", "until": "2026-06-01T00:00:00Z"})
     assert [r["hash"] for r in out["results"]] == ["old"]
+
+
+@pytest.mark.parametrize(
+    "bounds,expected",
+    [
+        ({}, ["dated", "undated"]),                         # no bound: undated kept
+        ({"since": "2026-01-01T00:00:00Z"}, ["dated"]),     # since active: undated dropped
+        ({"until": "2026-12-01T00:00:00Z"}, ["dated"]),     # until active: undated dropped
+    ],
+)
+def test_rag_query_excludes_undated_when_bounded(monkeypatch, bounds, expected):
+    from engram.mcp_server.tools import rag as ragtool
+    conn = _conn()
+    rows = (("dated", "2026-06-01T00:00:00Z"), ("undated", None))
+    for h, ts in rows:
+        conn.execute("INSERT INTO content (hash,title,body,source_url,source_tier,fetched_at,"
+                     "confidence,kind,tombstoned) VALUES (?,?,?,?,?,?,?,?,0)",
+                     (h, h, "alpha term", None, "manual", ts, 0.8, "kb"))
+    import engram.rag.query as q
+    monkeypatch.setattr(q, "embed_one", lambda s: b"x")
+    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [("dated", 0.8), ("undated", 0.8)])
+    out = ragtool.register(conn)["rag.query"]["handler"]({"query": "alpha", **bounds})
+    assert sorted(r["hash"] for r in out["results"]) == expected
 
 
 def test_rag_timeline_tool_returns_ordered_events():

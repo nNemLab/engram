@@ -142,9 +142,13 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = N
             continue
         if r["kind"] in excl_kinds:
             continue
-        if since and (r["fetched_at"] or "") < since:
+        # Time-bounded queries: rows without `fetched_at` (NULL/empty) cannot be
+        # temporally placed, so they are excluded whenever either bound is active.
+        if (since or until) and not r["fetched_at"]:
             continue
-        if until and (r["fetched_at"] or "") >= until:
+        if since and r["fetched_at"] < since:
+            continue
+        if until and r["fetched_at"] >= until:
             continue
         tier_w = weights.get(r["source_tier"] or "", 0.5)
         decay = _confidence_decay(r["fetched_at"], half_life)

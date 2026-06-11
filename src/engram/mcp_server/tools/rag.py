@@ -124,8 +124,8 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
         "rag.timeline": {
             "description": "Reconstruct an episodic timeline: walk content "
                            "lifecycle events (ingested / vault_edit / superseded) in "
-                           "chronological order. Pass `query` to scope to a topic's content "
-                           "lineage, or `since`/`until` to bound a time window. Answers "
+                           "chronological order. Pass `query` to scope to events touching "
+                           "a topic's content, or `since`/`until` to bound a time window. Answers "
                            "'how did this knowledge evolve, and in what order?' — which the "
                            "semantic rag.query surface cannot.",
             "input_schema": {
@@ -133,12 +133,12 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Optional topic; scopes the walk to the content this "
-                                       "topic surfaces and its revision lineage. Omit for an "
+                        "description": "Optional topic; scopes the walk to events touching the "
+                                       "content this topic surfaces. Omit for an "
                                        "unscoped chronological walk.",
                     },
                     "k": {"type": "integer", "default": 12,
-                          "description": "Topic-search fan-out used to seed the lineage "
+                          "description": "Topic-search fan-out used to seed the scope "
                                          "(ignored when `query` is omitted)."},
                     "since": {
                         "type": "string",
