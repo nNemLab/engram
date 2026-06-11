@@ -18,16 +18,28 @@ is a quick reference.
 - **`kb.contradictions`** — List unresolved (default) or all contradictions.
 - **`kb.flag_contradiction`** — Mark two hashes as contradicting; emits a
   `contradicted` event.
+- **`kb.resolve_supersede`** — Act on a poller-blocked supersede contradiction
+  raised on a `protected` (human-edited) row. `choice='accept_upstream'` promotes
+  the pending upstream revision to current, re-projects the vault file, clears
+  `protected`, and resolves the contradiction `kept_b` (via a `superseded` event);
+  `choice='keep_mine'` keeps the human revision current and resolves `kept_a`,
+  optionally tombstoning the upstream revision (`tombstone_upstream`, default
+  `false`). Required: `hash` (the protected row), `choice`.
 
 ## rag.*
 
 - **`rag.query`** — Hybrid retrieval (dense + BM25, RRF-fused, confidence-ranked).
   Returns a calibration `verdict` (`STRONG`/`WEAK`/`NONE`) plus ranked `results`
   (snippet, `source_url`, `fetched_at`, score). Optional: `token_budget`, `level`
-  (`snippet`/`full`), `since`. Logs a `retrieved` event per hit (drives
-  demand-driven staleness via the reactor).
+  (`snippet`/`full`), and `since`/`until` to bound results to a `[since, until)`
+  `fetched_at` window (undated rows are excluded when either bound is set). Logs a
+  `retrieved` event (drives demand-driven staleness via the reactor).
 - **`rag.cite`** — Record that an answer was grounded in specific content hashes;
   weights those entries up in later ranking (citation-weighted retrieval).
+- **`rag.timeline`** — Reconstruct an episodic timeline: a chronological walk over
+  content-lifecycle events (`ingested` / `vault_edit` / `superseded`), optionally
+  scoped to a topic (`query`) and bounded by `since`/`until`. Returns ordered
+  entries; deterministic, no model calls.
 
 ## research.*
 
