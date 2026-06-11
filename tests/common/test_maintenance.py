@@ -30,7 +30,12 @@ def _open(path: Path) -> sqlite3.Connection:
 
 
 def _apply_schema(conn: sqlite3.Connection, embed_dim: int = 4) -> None:
-    for fn in ("001_initial.sql", "002_sources_and_revisions.sql", "003_grounding.sql"):
+    for fn in (
+        "001_initial.sql",
+        "002_sources_and_revisions.sql",
+        "003_grounding.sql",
+        "004_protected.sql",
+    ):
         conn.executescript((SCHEMA / fn).read_text())
     conn.execute(
         f"CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0("
@@ -365,3 +370,76 @@ def test_reembed_into_empty_corpus(tmp_path):
     ).fetchone()[0]
     assert "FLOAT[16]" in tbl_sql
     conn.close()
+
+
+def _capturing_embedder(dim: int):
+    """A fake embedder that records every string it was asked to embed."""
+    seen: list[str] = []
+
+    def embed_many(texts):
+        seen.extend(texts)
+        return [sqlite_vec.serialize_float32([0.1] * dim) for _ in texts]
+
+    return embed_many, seen
+
+
+def test_reembed_truncates_body_to_match_live_ingest(tmp_path):
+    """A body longer than the cap must be embedded over the SAME truncated prefix
+    by both reembed and the live ingest handler — otherwise a reembed produces
+    vectors that re-ingesting would never reproduce (#74 review)."""
+    from engram.rag import chunk as chunker
+
+    size_tokens = 512
+    cap = chunker.embed_char_cap(size_tokens)
+
+    src = tmp_path / "db.sqlite"
+    conn = _open(src)
+    _apply_schema(conn, embed_dim=4)
+    long_body = "A" * (cap + 9000)  # comfortably longer than the truncation cap
+    h = _insert_content(conn, long_body)
+    conn.commit()
+
+    embed_many, seen = _capturing_embedder(8)
+    maintenance.reembed(conn, embed_many, 8, embed_char_cap=cap)
+    conn.commit()
+    conn.close()
+
+    # reembed embedded the truncated prefix, not the full body.
+    assert len(seen) == 1
+    assert seen[0] == long_body[:cap]
+    # And that prefix is exactly what the live ingest path embeds.
+    assert seen[0] == chunker.embed_prefix(long_body, size_tokens)
+    assert h  # body was actually stored
+
+
+def test_reembed_wrong_width_leaves_old_index_intact(tmp_path):
+    """A mid-reembed abort (wrong embedder width) must ROLLBACK, leaving the
+    original embeddings table and its rows untouched (#74 review: crash-safety)."""
+    src = tmp_path / "db.sqlite"
+    hashes = _make_db(src)  # 4-dim table with 1 embedding for h1
+
+    conn = _open(src)
+    before_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'embeddings'"
+    ).fetchone()[0]
+    before_rows = {
+        r["content_hash"] for r in conn.execute("SELECT content_hash FROM embeddings")
+    }
+    assert "FLOAT[4]" in before_sql
+    assert before_rows == {hashes["h1"]}
+
+    # Embedder produces 6-dim vectors but we ask for an 8-dim table → aborts.
+    with pytest.raises(maintenance.ReembedError, match="6-dim"):
+        maintenance.reembed(conn, _fake_embedder(6), 8)
+
+    # The original 4-dim table and its row survived the rollback.
+    after_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'embeddings'"
+    ).fetchone()[0]
+    after_rows = {
+        r["content_hash"] for r in conn.execute("SELECT content_hash FROM embeddings")
+    }
+    conn.close()
+    assert after_sql == before_sql
+    assert "FLOAT[4]" in after_sql
+    assert after_rows == before_rows

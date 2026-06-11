@@ -315,6 +315,7 @@ def reembed(
     new_dim: int,
     *,
     batch_size: int = 64,
+    embed_char_cap: int | None = None,
 ) -> dict[str, Any]:
     """Re-embed the live corpus at `new_dim`, replacing the `embeddings` table.
 
@@ -331,9 +332,23 @@ def reembed(
     `[rag]` / sentence-transformers dependency: the `bin/` wrapper passes the
     real `engram.rag.embed.embed_many`; tests pass a deterministic fake.
 
+    `embed_char_cap`, if given, truncates each body to that many leading
+    characters before embedding — matching the live ingest path, which embeds
+    only `chunk.embed_prefix(body, chunk_size_tokens)`. Passing it (as
+    `bin/eos-reembed` does, via `chunk.embed_char_cap(cfg.rag.chunk_size_tokens)`)
+    keeps reembed-produced vectors identical to what re-ingesting would compute.
+    The cap is threaded as a plain int so this stays config- and torch-free.
+
     Width is validated against `new_dim` before any insert, so a mis-wired
     embedder fails loud (ReembedError) instead of silently writing a table the
     compatibility guard would later reject.
+
+    The drop+recreate+insert sequence runs inside a single explicit transaction.
+    The DB connects in autocommit mode (`isolation_level=None`), so without this
+    each statement would commit on its own and a crash mid-reembed could leave a
+    dropped or half-rebuilt index. vec0 DDL is transactional in SQLite, so on any
+    failure (including a width-mismatch `ReembedError`) we ROLLBACK and the OLD
+    index is left fully intact.
 
     Caller responsibilities (handled by `bin/eos-reembed`): snapshot first, and
     update `rag.embed_model` / `rag.embed_dim` in config so the new table width
@@ -349,34 +364,43 @@ def reembed(
     ).fetchall()
     content_total = conn.execute("SELECT COUNT(*) FROM content").fetchone()[0]
 
-    conn.execute("DROP TABLE IF EXISTS embeddings")
-    conn.execute(
-        f"CREATE VIRTUAL TABLE embeddings USING vec0("
-        f"content_hash TEXT PRIMARY KEY, embedding FLOAT[{new_dim}])"
-    )
+    def _prefix(body: str) -> str:
+        return body if embed_char_cap is None else body[:embed_char_cap]
 
-    embedded = 0
-    expected_bytes = new_dim * 4  # float32
-    for start in range(0, len(rows), batch_size):
-        batch = rows[start : start + batch_size]
-        vectors = embed_many([r["body"] for r in batch])
-        if len(vectors) != len(batch):
-            raise ReembedError(
-                f"embedder returned {len(vectors)} vectors for {len(batch)} inputs"
-            )
-        for row, vec in zip(batch, vectors, strict=True):
-            if len(vec) != expected_bytes:
+    conn.execute("BEGIN")
+    try:
+        conn.execute("DROP TABLE IF EXISTS embeddings")
+        conn.execute(
+            f"CREATE VIRTUAL TABLE embeddings USING vec0("
+            f"content_hash TEXT PRIMARY KEY, embedding FLOAT[{new_dim}])"
+        )
+
+        embedded = 0
+        expected_bytes = new_dim * 4  # float32
+        for start in range(0, len(rows), batch_size):
+            batch = rows[start : start + batch_size]
+            vectors = embed_many([_prefix(r["body"]) for r in batch])
+            if len(vectors) != len(batch):
                 raise ReembedError(
-                    f"embedder produced a {len(vec) // 4}-dim vector but the new "
-                    f"table is {new_dim}-dim; aborting before writing a mismatched "
-                    f"index (content hash {row['hash']})"
+                    f"embedder returned {len(vectors)} vectors for {len(batch)} inputs"
                 )
-            conn.execute(
-                "INSERT OR REPLACE INTO embeddings (content_hash, embedding) "
-                "VALUES (?, ?)",
-                (row["hash"], vec),
-            )
-            embedded += 1
+            for row, vec in zip(batch, vectors, strict=True):
+                if len(vec) != expected_bytes:
+                    raise ReembedError(
+                        f"embedder produced a {len(vec) // 4}-dim vector but the new "
+                        f"table is {new_dim}-dim; aborting before writing a mismatched "
+                        f"index (content hash {row['hash']})"
+                    )
+                conn.execute(
+                    "INSERT OR REPLACE INTO embeddings (content_hash, embedding) "
+                    "VALUES (?, ?)",
+                    (row["hash"], vec),
+                )
+                embedded += 1
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
     return {
         "new_dim": new_dim,

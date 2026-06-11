@@ -91,12 +91,20 @@ fi
 from engram import maintenance
 from engram.common import db as dbmod
 from engram.common.config import load_config
+from engram.rag.chunk import embed_char_cap
 from engram.rag.embed import embed_many
 
 cfg = load_config()
 conn = dbmod._connect(cfg.db_path)  # raw: bypass the dim-mismatch guard mid-migration
 try:
-    report = maintenance.reembed(conn, embed_many, cfg.rag.embed_dim)
+    report = maintenance.reembed(
+        conn,
+        embed_many,
+        cfg.rag.embed_dim,
+        # Match the live ingest path's doc-level truncation so a reembed
+        # reproduces exactly what re-ingesting would compute.
+        embed_char_cap=embed_char_cap(cfg.rag.chunk_size_tokens),
+    )
 finally:
     conn.close()
 
