@@ -273,6 +273,30 @@ def test_verify_detects_deleted_event_breaks_chain(tmp_path):
     assert chain["ok"] is False
 
 
+def test_verify_detects_reordered_events(tmp_path):
+    # Reordering two chained events is detectable: each row's event_hash is
+    # bound to its own id/payload, so swapping two rows' bodies leaves their
+    # stored event_hash stale and the recompute in verify mismatches.
+    src = tmp_path / "db.sqlite"
+    conn = _open(src)
+    _apply_schema(conn)
+    for i in range(3):
+        event_log.append(conn, "system", {"i": i}, actor="agent")
+    # Swap the payloads of two events without touching their event_hash.
+    p2 = conn.execute("SELECT payload FROM events WHERE id = 2").fetchone()["payload"]
+    p3 = conn.execute("SELECT payload FROM events WHERE id = 3").fetchone()["payload"]
+    conn.execute("UPDATE events SET payload = ? WHERE id = 2", (p3,))
+    conn.execute("UPDATE events SET payload = ? WHERE id = 3", (p2,))
+    conn.commit()
+    conn.close()
+
+    result = maintenance.verify(src)
+
+    assert result["ok"] is False
+    chain = next(c for c in result["checks"] if c["name"] == "event_chain")
+    assert chain["ok"] is False
+
+
 def test_verify_skips_pre_chain_rows(tmp_path):
     # Rows that predate the migration carry NULL event_hash and must NOT
     # false-positive: the chain starts at the migration boundary.

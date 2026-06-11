@@ -72,6 +72,11 @@ def canonical_event_hash(
         correlation_id or "",
         prev_hash,
     ]
+    # The newline-join framing is unambiguous only because none of these fields
+    # can contain a raw newline: id is numeric, ts is strict ISO, payload is
+    # compact JSON (newlines escaped), and type/actor/correlation_id are
+    # controlled enums/identifiers. If a future free-form field is added here,
+    # switch to length-prefixed framing or hash a JSON array instead.
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
