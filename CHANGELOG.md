@@ -8,6 +8,30 @@ From v0.2.1 onward, releases are automated by
 [Conventional Commits](https://www.conventionalcommits.org/); entries below
 v0.2.1 were authored by hand.
 
+## [0.2.3](https://github.com/nNemLab/engram/compare/v0.2.2...v0.2.3) (2026-06-11)
+
+
+### Features
+
+* **dedup:** resolve tool for blocked-supersede contradictions ([#71](https://github.com/nNemLab/engram/issues/71)) ([26a9cad](https://github.com/nNemLab/engram/commit/26a9cadf957cc714259c5203e6396cc948a40846)), closes [#54](https://github.com/nNemLab/engram/issues/54)
+* **log:** tamper-evident hash-chained event log ([#72](https://github.com/nNemLab/engram/issues/72)) ([17a4861](https://github.com/nNemLab/engram/commit/17a486138f658215dfe2b082fdacac249f558ad3)), closes [#45](https://github.com/nNemLab/engram/issues/45)
+* **maintenance:** add corpus re-embed migration for embedding-model changes ([#74](https://github.com/nNemLab/engram/issues/74)) ([29fbdb0](https://github.com/nNemLab/engram/commit/29fbdb063b26f5e6e17640b4f229de5db49db7f2)), closes [#43](https://github.com/nNemLab/engram/issues/43)
+* **rag:** temporal retrieval — time-bounded query + episodic timeline ([#75](https://github.com/nNemLab/engram/issues/75)) ([5baaa17](https://github.com/nNemLab/engram/commit/5baaa17db650902f49adcb058847653ffb2669f8)), closes [#40](https://github.com/nNemLab/engram/issues/40)
+
+
+### Bug Fixes
+
+* **init:** seed starter playbooks in eos-init ([#68](https://github.com/nNemLab/engram/issues/68)) ([b068a42](https://github.com/nNemLab/engram/commit/b068a4277f44e6bd6c4688d17f66bcef9f6ce14d)), closes [#67](https://github.com/nNemLab/engram/issues/67)
+* **rag:** default source-tier weights so tier ranking isn't a no-op ([#78](https://github.com/nNemLab/engram/issues/78)) ([c0d6191](https://github.com/nNemLab/engram/commit/c0d61913fc0bd175ae2228380b9dc213413a3f2c))
+* repair hybrid retrieval ranking, BM25 recall, grounding verdict, and near-dup dedup ([#81](https://github.com/nNemLab/engram/issues/81)) ([239e80e](https://github.com/nNemLab/engram/commit/239e80ec1a0a0ba186f72876c8646c00f90a578a))
+* **watcher:** record human vault edits as new content revisions ([#70](https://github.com/nNemLab/engram/issues/70)) ([d52b5cf](https://github.com/nNemLab/engram/commit/d52b5cf67ea4f612d04579761b605509dde5c68c)), closes [#55](https://github.com/nNemLab/engram/issues/55)
+
+
+### Documentation
+
+* **configuration:** add granite-embedding-r2 as the CPU 768-dim option ([#79](https://github.com/nNemLab/engram/issues/79)) ([6fda21a](https://github.com/nNemLab/engram/commit/6fda21ab846e83a59eca194730d4a00760e85e99))
+* fix release badge, recenter header lockup, correct stale references ([#76](https://github.com/nNemLab/engram/issues/76)) ([73ad702](https://github.com/nNemLab/engram/commit/73ad7022a5cdf8d13ee3549fc712c8bb88887bd1))
+
 ## [0.2.2](https://github.com/nNemLab/engram/compare/v0.2.1...v0.2.2) (2026-06-10)
 
 
