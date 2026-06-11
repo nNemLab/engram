@@ -33,6 +33,9 @@ rag:
 
 # Confidence ranking weights — soft prior, not ground truth. Keep the spread
 # narrow so a directly-relevant blog can outrank a tangentially-relevant paper.
+# Optional: tiers omitted here (or the whole block) fall back to the same
+# built-in defaults (engram.rag.query.DEFAULT_TIER_WEIGHTS); listed values
+# override per-tier. Unknown tiers default to a neutral 0.5.
 confidence:
   source_tier_weights:
     peer-reviewed: 0.85

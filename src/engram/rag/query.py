@@ -88,6 +88,27 @@ def _confidence_decay(fetched_at: str | None, half_life_days: int) -> float:
     return 0.5 ** (age_days / max(1, half_life_days))
 
 
+# Built-in per-tier authority weights, applied when a tier is absent from
+# config.confidence.source_tier_weights. Mirrors config.example.yml so a config
+# that omits the block (or a tier) still ranks by source authority instead of
+# flattening every tier to a single value. Config values override per-tier.
+DEFAULT_TIER_WEIGHTS = {
+    "peer-reviewed": 0.85,
+    "vendor-doc": 0.80,
+    "manual": 0.70,
+    "agent-derived": 0.60,
+    "blog": 0.55,
+    "forum": 0.30,
+}
+
+
+def _tier_weight(weights: dict[str, float], tier: str | None) -> float:
+    """Resolve a source tier's ranking weight: explicit config value, else the
+    built-in default for that tier, else a neutral 0.5 for unknown tiers."""
+    t = tier or ""
+    return weights.get(t, DEFAULT_TIER_WEIGHTS.get(t, 0.5))
+
+
 def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = None,
                   log_retrieval: bool = True,
                   exclude_source_tiers: list[str] | None = None,
@@ -150,7 +171,7 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = N
             continue
         if until and r["fetched_at"] >= until:
             continue
-        tier_w = weights.get(r["source_tier"] or "", 0.5)
+        tier_w = _tier_weight(weights, r["source_tier"])
         decay = _confidence_decay(r["fetched_at"], half_life)
         uf = usage_factor(conn, h, weight=cfg.grounding.usage_weight)
         ranked_score = rrf_score * (r["confidence"] or 0.5) * tier_w * decay * uf
