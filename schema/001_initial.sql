@@ -86,8 +86,10 @@ END;
 -- =============================================================
 -- embeddings: vector store (sqlite-vec virtual table)
 -- Created at runtime after the sqlite-vec extension is loaded.
--- Schema: vec0(content_hash TEXT PRIMARY KEY, embedding FLOAT[384])
--- See src/engram/common/db.py: ensure_vec_table()
+-- Schema: vec0(content_hash TEXT PRIMARY KEY, embedding FLOAT[<dim>])
+-- The width is the configured embedder's dimension (rag.embed_dim, default 384);
+-- see src/engram/common/db.py: init_schema(). To migrate to a different
+-- embedding model/dimension, re-embed the corpus with `eos reembed` (issue #43).
 -- =============================================================
 
 -- =============================================================

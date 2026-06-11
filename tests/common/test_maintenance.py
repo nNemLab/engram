@@ -275,3 +275,93 @@ def test_restore_uses_backup_dir(tmp_path):
     assert result["previous_backup"] is not None
     assert Path(result["previous_backup"]).parent == backup_dir
     assert Path(result["previous_backup"]).exists()
+
+
+# --------------------------------------------------------------------------- #
+# reembed (#43)
+# --------------------------------------------------------------------------- #
+def _fake_embedder(dim: int):
+    """Deterministic, torch-free embedder: maps each body to a `dim`-wide vector.
+
+    Returns sqlite-vec float32 bytes so widths match the real embed pipeline.
+    """
+    def embed_many(texts):
+        out = []
+        for t in texts:
+            seed = float(len(t) % 7) + 0.1
+            out.append(sqlite_vec.serialize_float32([seed] * dim))
+        return out
+
+    return embed_many
+
+
+def test_reembed_changes_table_dim_and_round_trips(tmp_path):
+    src = tmp_path / "db.sqlite"
+    hashes = _make_db(src)  # 4-dim table, 1 embedding, 2 live + 1 tombstoned content
+
+    conn = _open(src)
+    report = maintenance.reembed(conn, _fake_embedder(8), 8)
+    conn.commit()
+
+    assert report["previous_dim"] == 4
+    assert report["new_dim"] == 8
+    assert report["content_total"] == 3
+    assert report["embedded"] == 2  # only the 2 non-tombstoned rows
+    assert report["skipped_tombstoned"] == 1
+
+    # The vec0 table is now 8-dim and round-trips a MATCH query.
+    tbl_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'embeddings'"
+    ).fetchone()[0]
+    assert "FLOAT[8]" in tbl_sql
+    n_emb = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+    assert n_emb == 2
+    probe = sqlite_vec.serialize_float32([0.1] * 8)
+    nearest = conn.execute(
+        "SELECT content_hash FROM embeddings WHERE embedding MATCH ? "
+        "ORDER BY distance LIMIT 1",
+        (probe,),
+    ).fetchone()
+    assert nearest["content_hash"] in (hashes["h1"], hashes["h2"])
+    conn.close()
+
+
+def test_reembed_only_embeds_live_content(tmp_path):
+    src = tmp_path / "db.sqlite"
+    hashes = _make_db(src)
+    conn = _open(src)
+    maintenance.reembed(conn, _fake_embedder(8), 8)
+    conn.commit()
+    present = {
+        r["content_hash"]
+        for r in conn.execute("SELECT content_hash FROM embeddings")
+    }
+    conn.close()
+    assert hashes["h3"] not in present  # tombstoned row never gets a vector
+    assert present == {hashes["h1"], hashes["h2"]}
+
+
+def test_reembed_aborts_on_wrong_width(tmp_path):
+    src = tmp_path / "db.sqlite"
+    _make_db(src)
+    conn = _open(src)
+    # Embedder produces 6-dim vectors but we ask for an 8-dim table.
+    with pytest.raises(maintenance.ReembedError, match="6-dim"):
+        maintenance.reembed(conn, _fake_embedder(6), 8)
+    conn.close()
+
+
+def test_reembed_into_empty_corpus(tmp_path):
+    src = tmp_path / "db.sqlite"
+    conn = _open(src)
+    _apply_schema(conn, embed_dim=4)  # schema, no content rows
+    conn.commit()
+    report = maintenance.reembed(conn, _fake_embedder(16), 16)
+    conn.commit()
+    assert report["embedded"] == 0
+    assert report["content_total"] == 0
+    tbl_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'embeddings'"
+    ).fetchone()[0]
+    assert "FLOAT[16]" in tbl_sql
+    conn.close()
