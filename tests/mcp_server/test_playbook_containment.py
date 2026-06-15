@@ -1,8 +1,8 @@
 """playbook.run must contain agent-supplied names to the template dirs (issue #32)."""
 import json
 import sqlite3
-import subprocess
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -79,13 +79,18 @@ def test_normal_missing_name_reports_not_found(cfg_root, run):
 
 def test_contained_template_still_runs(cfg_root, run, monkeypatch):
     (cfg_root / "playbooks/scratch/demo.ipynb").write_text("{}")
-    calls = {}
 
-    def fake_run(cmd, **kwargs):
-        calls["cmd"] = cmd
-        return subprocess.CompletedProcess(cmd, 0, stdout="done", stderr="")
+    mock_proc = mock.Mock()
+    mock_proc.pid = 99995
+    mock_proc.communicate.return_value = (b"done", b"")
+    mock_proc.returncode = 0
+    session_flag = []
 
-    monkeypatch.setattr("engram.mcp_server.tools.playbook.subprocess.run", fake_run)
+    def fake_popen(cmd, **kwargs):
+        session_flag.append(kwargs.get("start_new_session", False))
+        return mock_proc
+
+    monkeypatch.setattr("engram.mcp_server.tools.playbook.subprocess.Popen", fake_popen)
     out = run({"name": "demo", "runtime": "jupyter"})
     assert out["exit_code"] == 0
-    assert str(cfg_root / "playbooks/scratch/demo.ipynb") in calls["cmd"]
+    assert session_flag[0] is True
