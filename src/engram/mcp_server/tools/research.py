@@ -57,23 +57,25 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
             return {"error": str(e)}
         r.raise_for_status()
 
-        # Guard: only HTML/text responses reach trafilatura.
+        # Guard: ONLY HTML responses reach trafilatura.
         ct = r.headers.get("content-type", "").lower()
-        body_bytes = r.content
-        if "text" not in ct:
+        # Strip any charset / params — we only care about the media type.
+        media_type = ct.split(";")[0].strip()
+        if media_type not in ("text/html", "application/xhtml+xml"):
             return {
                 "error": f"unsupported content-type {ct!r} for {url} "
-                         "(expected HTML/text — use a text-based URL or "
+                         "(expected HTML — use a .html URL or "
                          "provide body directly via research.fetch_url)",
             }
-        # Sanity check: refuse obvious binary blobs that slip through
-        # (e.g. a content-disposition response returning raw PDF bytes
-        # with a misleading content-type).
-        if body_bytes[:4] == b"%PDF":
+        # Sanity check: refuse PDF / other binaries that slip through.
+        # Strip leading whitespace and BOM so `%PDF` is found even when
+        # a BOM / whitespace prefix is present.
+        raw = r.content.lstrip(b"\xef\xbb\xbf \t\n\r")
+        if raw[:4] == b"%PDF":
             return {
                 "error": f"refusing PDF response for {url} "
                          "(PDF extraction is not supported by ingest_url — "
-                         "use a text-based URL or provide body via "
+                         "use an HTML URL or provide body via "
                          "research.fetch_url)",
             }
 

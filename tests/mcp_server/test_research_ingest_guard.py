@@ -116,6 +116,20 @@ def test_ingest_url_rejects_pdf_magic_bytes_even_with_text_ct(ingest):
     assert "pdf" in out["error"].lower()
 
 
+def test_ingest_url_rejects_pdf_with_bom_or_leading_spaces(ingest):
+    # %PDF must be detected even if preceded by BOM or whitespace.
+    with mock.patch(
+        "engram.research.safe_fetch.get",
+        return_value=_make_response(
+            "text/html",
+            b"\xef\xbb\xbf%PDF-1.7\n",
+        ),
+    ):
+        out = ingest({"url": "https://example.com/bom.pdf"})
+    assert "error" in out
+    assert "pdf" in out["error"].lower()
+
+
 def test_ingest_url_rejects_octet_stream(ingest):
     with mock.patch(
         "engram.research.safe_fetch.get",
@@ -137,6 +151,26 @@ def test_ingest_url_rejects_json_content_type(ingest):
         ),
     ):
         out = ingest({"url": "https://api.example.com/data.json"})
+    assert "error" in out
+
+
+def test_ingest_url_rejects_plain_text_content_type(ingest):
+    # Only HTML is accepted — text/plain, text/csv, etc. are rejected.
+    with mock.patch(
+        "engram.research.safe_fetch.get",
+        return_value=_make_response("text/plain", "some text"),
+    ):
+        out = ingest({"url": "https://example.com/readme.txt"})
+    assert "error" in out
+    assert "unsupported content-type" in out["error"].lower()
+
+
+def test_ingest_url_rejects_csv_content_type(ingest):
+    with mock.patch(
+        "engram.research.safe_fetch.get",
+        return_value=_make_response("text/csv", "a,b,c\n1,2,3"),
+    ):
+        out = ingest({"url": "https://example.com/data.csv"})
     assert "error" in out
 
 
