@@ -102,3 +102,22 @@ def test_set_emits_source_updated(conn):
     payload = json.loads(rows[0]["payload"])
     assert payload["source_id"] == "x"
     assert "paused" in payload["updated_fields"]
+
+
+def test_set_on_missing_id_emits_no_event(conn):
+    """Regression guard for #166 cross-review: sources.set on a non-existent
+    id must not emit a source_updated audit event — the event should only fire
+    when the row actually exists.
+    """
+    from engram.mcp_server.tools.sources import register
+
+    tools = register(conn)
+
+    out = tools["sources.set"]["handler"]({"id": "ghost", "paused": True})
+    assert out["error"] == "not found"
+    assert out["id"] == "ghost"
+
+    rows = conn.execute(
+        "SELECT id FROM events WHERE type = ?", ("source_updated",)
+    ).fetchall()
+    assert len(rows) == 0

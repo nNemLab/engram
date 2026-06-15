@@ -146,13 +146,13 @@ def register(conn: sqlite3.Connection) -> dict[str, dict]:
             cur = conn.execute(
                 f"UPDATE sources SET {', '.join(fields)} WHERE id = ?", params
             )
+            if cur.rowcount == 0:
+                return {"error": "not found", "id": args["id"]}
             event_log.append(
                 conn, "source_updated",
                 {"source_id": args["id"], "updated_fields": updated},
                 actor="agent",
             )
-        if cur.rowcount == 0:
-            return {"error": "not found", "id": args["id"]}
         return {"updated_fields": updated}
 
     def health(args: dict[str, Any]) -> dict[str, Any]:
