@@ -74,6 +74,141 @@ def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
                 conn.execute("COMMIT")
 
 
+class _LockingCursor:
+    """A fully-buffered view of one statement's result.
+
+    `LockingConnection` runs each statement to completion and drains its rows
+    while holding the DB lock, then hands back this cursor. Because the cursor is
+    never stepped against SQLite outside the lock, no other thread's statement
+    can interleave with a half-iterated result on the shared connection (the race
+    #112 closed) -- while the lock is free between statements so a handler's
+    non-DB work runs concurrently (#113). It mirrors the slice of the
+    `sqlite3.Cursor` API the codebase actually uses against the shared
+    connection: row iteration, `fetchone`/`fetchmany`/`fetchall`, and the
+    `lastrowid`/`rowcount`/`description` attributes.
+    """
+
+    def __init__(
+        self,
+        rows: list,
+        *,
+        lastrowid: int | None,
+        rowcount: int,
+        description: object,
+    ) -> None:
+        self._rows = rows
+        self._pos = 0
+        self.lastrowid = lastrowid
+        self.rowcount = rowcount
+        self.description = description
+
+    def fetchone(self):
+        if self._pos >= len(self._rows):
+            return None
+        row = self._rows[self._pos]
+        self._pos += 1
+        return row
+
+    def fetchmany(self, size: int | None = None):
+        if size is None:
+            size = len(self._rows) - self._pos
+        end = min(self._pos + max(size, 0), len(self._rows))
+        rows = self._rows[self._pos:end]
+        self._pos = end
+        return rows
+
+    def fetchall(self):
+        rows = self._rows[self._pos:]
+        self._pos = len(self._rows)
+        return rows
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._pos >= len(self._rows):
+            raise StopIteration
+        row = self._rows[self._pos]
+        self._pos += 1
+        return row
+
+
+def _drain(cur: sqlite3.Cursor) -> _LockingCursor:
+    """Materialize a freshly-executed cursor's rows + metadata (lock held)."""
+    return _LockingCursor(
+        cur.fetchall(),
+        lastrowid=cur.lastrowid,
+        rowcount=cur.rowcount,
+        description=cur.description,
+    )
+
+
+class LockingConnection:
+    """Lock-serialized proxy over the shared SQLite connection (#83, #113).
+
+    The MCP server shares one autocommit connection across `asyncio.to_thread`
+    worker threads. A single sqlite3 connection has one statement/transaction
+    state, so two threads driving it at once interleave writes and race into
+    `database is locked` (#83). PR #112 closed that by holding the process-wide
+    DB lock around the ENTIRE tool handler -- but that also serialized the
+    handlers' non-DB work (research network fetches, playbook subprocesses), a
+    throughput regression (#113).
+
+    This proxy narrows the lock to the DB-touching regions. Every access to the
+    underlying connection -- reads AND writes, not just `transaction()` -- runs
+    under the process-wide lock, and each statement is run to completion and its
+    rows drained while the lock is held (see `_drain`), so a cursor is never
+    stepped against SQLite outside the lock. Between statements the lock is free,
+    so non-DB work in a handler runs concurrently and tool calls overlap. The
+    lock is the same reentrant RLock `transaction()` takes, so a `transaction()`
+    opened inside a handler (which then runs its own statements through this
+    proxy) re-enters without deadlock.
+
+    Hand every tool handler this proxy rather than the bare connection so that
+    no code path can touch the shared connection without the lock.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def execute(self, sql, parameters=(), /) -> _LockingCursor:
+        with _DB_LOCK:
+            return _drain(self._conn.execute(sql, parameters))
+
+    def executemany(self, sql, seq_of_parameters, /) -> _LockingCursor:
+        with _DB_LOCK:
+            return _drain(self._conn.executemany(sql, seq_of_parameters))
+
+    def executescript(self, sql_script, /) -> _LockingCursor:
+        with _DB_LOCK:
+            return _drain(self._conn.executescript(sql_script))
+
+    def commit(self) -> None:
+        with _DB_LOCK:
+            self._conn.commit()
+
+    def rollback(self) -> None:
+        with _DB_LOCK:
+            self._conn.rollback()
+
+    def close(self) -> None:
+        with _DB_LOCK:
+            self._conn.close()
+
+    @property
+    def in_transaction(self) -> bool:
+        with _DB_LOCK:
+            return self._conn.in_transaction
+
+    @property
+    def row_factory(self):
+        return self._conn.row_factory
+
+    @row_factory.setter
+    def row_factory(self, value) -> None:
+        self._conn.row_factory = value
+
+
 class IncompatibleDatabaseError(RuntimeError):
     """The on-disk database is incompatible with this build of engram."""
 
