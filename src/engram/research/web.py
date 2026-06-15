@@ -28,6 +28,7 @@ class WebResult:
 
 _DEFAULT_TIMEOUT = 25.0
 _FETCH_TIMEOUT = 12.0
+_MAX_FETCH_CONCURRENCY = 6
 _USER_AGENT = "engram-research/0.1 (+self-hosted)"
 
 
@@ -39,8 +40,16 @@ async def _searxng_query(client: httpx.AsyncClient, base_url: str, q: str,
         timeout=_DEFAULT_TIMEOUT,
     )
     r.raise_for_status()
-    data = r.json()
-    return data.get("results", [])[:max_candidates]
+    try:
+        data = r.json()
+    except ValueError:
+        return []
+    if not isinstance(data, dict):
+        return []
+    results = data.get("results", [])
+    if not isinstance(results, list):
+        return []
+    return results[:max_candidates]
 
 
 async def _fetch_one(client: httpx.AsyncClient, url: str) -> str:
@@ -77,15 +86,22 @@ async def _search_async(query: str, k: int, max_candidates: int) -> list[WebResu
         if not raw:
             return []
 
-        # Parallel fetch of every candidate body.
-        bodies = await asyncio.gather(*[_fetch_one(client, r["url"]) for r in raw])
+        # Parallel fetch of every candidate body with a bounded fan-out.
+        semaphore = asyncio.Semaphore(_MAX_FETCH_CONCURRENCY)
+
+        async def _fetch_bounded(url: str) -> str:
+            async with semaphore:
+                return await _fetch_one(client, url)
+
+        usable_raw = [r for r in raw if isinstance(r, dict) and r.get("url")]
+        bodies = await asyncio.gather(*[_fetch_bounded(r["url"]) for r in usable_raw])
 
     extracted = [_extract(b) for b in bodies]
 
     # Build candidate WebResult list. Use snippet as fallback when extraction
     # produced nothing — better to rerank a snippet than to drop the entry.
     candidates: list[WebResult] = []
-    for r, body in zip(raw, extracted):
+    for r, body in zip(usable_raw, extracted):
         text_for_rerank = body if body else (r.get("content") or "")
         if not text_for_rerank.strip():
             continue
