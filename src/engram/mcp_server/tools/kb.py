@@ -7,6 +7,8 @@ from typing import Any
 from ... import dedup
 from ... import log as event_log
 
+MAX_LIMIT = 100  # hard upper bound on kb.list limit to prevent oversized queries
+
 
 def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
 
@@ -36,6 +38,7 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
     def list_(args: dict[str, Any]) -> list[dict[str, Any]]:
         kind = args.get("kind")
         limit = int(args.get("limit", 50))
+        limit = max(1, min(limit, MAX_LIMIT))
         if kind:
             rows = conn.execute(
                 "SELECT hash, title, kind, source_url, fetched_at FROM content "
