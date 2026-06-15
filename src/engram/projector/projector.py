@@ -144,7 +144,16 @@ def _handle_event(conn: sqlite3.Connection, vault: Path, evt: event_log.Event,
                 conn.execute("UPDATE content SET vault_path = ? WHERE hash = ?",
                              (old_path, hash_new))
                 conn.commit()
-                _atomic_write(abs_path, body)
+                # Skip the vault file write if the content being projected is
+                # protected (human-edited).  DB state stays consistent — the
+                # projector never overwrites a human-owned vault file (#119).
+                if not new_row["protected"]:
+                    _atomic_write(abs_path, body)
+                else:
+                    logger.warning(
+                        "superseded: hash=%s vault_path=%s is protected — skipping vault file write",
+                        hash_new, old_path,
+                    )
 
 
 def run() -> None:
