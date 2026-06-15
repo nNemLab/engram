@@ -82,6 +82,61 @@ async def test_poll_one_runs_due_source_and_advances_state(conn, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_slow_source_does_not_block_others(conn, monkeypatch):
+    """One source parked mid-fetch must not stall the other due sources in the
+    same tick: the fast sources complete while the slow one is still blocked."""
+    import asyncio
+
+    from engram.poller.adapters import ADAPTERS, Candidate
+    from engram.poller.poller import _poll_due
+
+    release = asyncio.Event()
+
+    class SlowAdapter:
+        name = "slow"
+        async def fetch(self, source):
+            await release.wait()  # park until the test releases it
+            yield Candidate(source_url="https://x/slow", body="S body", title="S")
+
+    fast = FakeAdapter([Candidate(source_url="https://x/fast", body="F body", title="F")])
+    monkeypatch.setitem(ADAPTERS, "fast", fast)
+    monkeypatch.setitem(ADAPTERS, "slow", SlowAdapter())
+
+    conn.execute(
+        "INSERT INTO sources (id, name, adapter, url, schedule, source_tier) "
+        "VALUES ('slow1', 'Slow', 'slow', 'https://x', '1d', 'manual'),"
+        "       ('fast1', 'Fast1', 'fast', 'https://x', '1d', 'manual'),"
+        "       ('fast2', 'Fast2', 'fast', 'https://x', '1d', 'manual')"
+    )
+    due = [dict(r) for r in conn.execute("SELECT * FROM sources").fetchall()]
+
+    task = asyncio.create_task(_poll_due(conn, due))
+    # Yield repeatedly so the fast coroutines run to completion while the slow
+    # one stays parked on `release`.
+    done = 0
+    for _ in range(100):
+        await asyncio.sleep(0)
+        done = conn.execute(
+            "SELECT COUNT(*) AS c FROM sources "
+            "WHERE id IN ('fast1', 'fast2') AND last_polled_at IS NOT NULL"
+        ).fetchone()["c"]
+        if done == 2:
+            break
+
+    # Both fast sources finished even though the slow one is still blocked.
+    assert done == 2
+    assert not task.done()
+    slow = conn.execute("SELECT last_polled_at FROM sources WHERE id='slow1'").fetchone()
+    assert slow["last_polled_at"] is None
+
+    # Release the slow source; the tick then completes cleanly.
+    release.set()
+    await task
+    slow = conn.execute("SELECT last_polled_at FROM sources WHERE id='slow1'").fetchone()
+    assert slow["last_polled_at"] is not None
+
+
+@pytest.mark.asyncio
 async def test_due_query_skips_paused_and_future(conn):
     from engram.poller.poller import select_due
     future = (datetime.now(UTC) + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
