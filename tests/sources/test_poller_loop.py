@@ -137,6 +137,75 @@ async def test_slow_source_does_not_block_others(conn, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_concurrent_sources_do_not_share_adapter_rate_limiter(monkeypatch):
+    """Adapters are process-wide singletons in ADAPTERS; the poller now polls
+    sources concurrently. Per-fetch mutable state (the rate limiter) must be a
+    local, not stored on self, or two concurrent sources sharing the one adapter
+    instance clobber each other's limiter mid-run."""
+    import asyncio
+    from collections import Counter
+
+    import httpx
+
+    import engram.poller.adapters.sitemap as sm
+    from engram.poller.adapters.sitemap import SitemapAdapter
+
+    sitemap_xml = (REPO / "tests" / "fixtures" / "sitemap_minimal.xml").read_text()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/sitemap.xml":
+            return httpx.Response(200, text=sitemap_xml,
+                                  headers={"content-type": "application/xml"})
+        return httpx.Response(200, text="<html><body>page</body></html>",
+                              headers={"content-type": "text/html", "etag": '"x"'})
+
+    # ONE adapter instance, shared by both sources (mirrors the ADAPTERS singleton).
+    adapter = SitemapAdapter(_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+    # Record the interval of whichever limiter each page fetch actually uses.
+    recorded: list[float] = []
+    real_fetch = sm.fetch_with_politeness
+
+    async def recording_fetch(client, url, *, rate_limiter, **kw):
+        recorded.append(rate_limiter._interval)
+        return await real_fetch(client, url, rate_limiter=rate_limiter, **kw)
+
+    monkeypatch.setattr(sm, "fetch_with_politeness", recording_fetch)
+
+    # Barrier forces both sources to finish creating their limiter (and collecting
+    # URLs) before EITHER starts fetching pages. With a shared-self limiter the
+    # second source's assignment would have clobbered the first's by then.
+    barrier = asyncio.Barrier(2)
+    orig_collect = SitemapAdapter._collect_urls
+
+    async def collect_with_barrier(self, sitemap_url, _depth=0):
+        urls = await orig_collect(self, sitemap_url, _depth)
+        if _depth == 0:
+            await barrier.wait()
+        return urls
+
+    monkeypatch.setattr(SitemapAdapter, "_collect_urls", collect_with_barrier)
+
+    base_cfg = {"include": ["*/engine/*"], "exclude": ["*/macos/*"]}
+    src_a = {"id": "a", "url": "https://docs.example.com/sitemap.xml",
+             "config": json.dumps({**base_cfg, "request_interval_ms": 100}), "cursor": None}
+    src_b = {"id": "b", "url": "https://docs.example.com/sitemap.xml",
+             "config": json.dumps({**base_cfg, "request_interval_ms": 999}), "cursor": None}
+
+    async def drain(src):
+        return [c async for c in adapter.fetch(src)]
+
+    res_a, res_b = await asyncio.gather(drain(src_a), drain(src_b))
+
+    # Each source yields its two engine pages.
+    assert len(res_a) == 2
+    assert len(res_b) == 2
+    # Source A's two fetches use a 0.1s limiter, B's use a 0.999s one. A shared
+    # limiter would skew this multiset (e.g. all four at one interval).
+    assert Counter(recorded) == Counter({100 / 1000: 2, 999 / 1000: 2})
+
+
+@pytest.mark.asyncio
 async def test_due_query_skips_paused_and_future(conn):
     from engram.poller.poller import select_due
     future = (datetime.now(UTC) + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
