@@ -247,3 +247,143 @@ def test_locking_connection_lock_is_free_during_non_db_work(tmp_path):
     t.start()
     t.join()
     assert acquired == [True]
+
+
+# --- #114: nested transaction() ownership -----------------------------------
+#
+# `transaction()` gates COMMIT/ROLLBACK on `own = not conn.in_transaction`, so an
+# inner scope that joins an outer transaction never commits or rolls it back.
+# These tests exercise that path explicitly: the production connection uses
+# `isolation_level=None`, so no implicit transaction is ever open — the only way
+# to have a pre-existing transaction is to enter an outer `with transaction()`
+# first.
+
+
+def test_nested_transaction_inner_does_not_commit_outer(tmp_path):
+    """Inner `transaction(conn)` joins the outer; only the outer commits.
+
+    An outer scope opens a transaction, writes rows, then enters an inner
+    `transaction()` that also succeeds. The inner scope's COMMIT/ROLLBACK are
+    guarded by `own = False`, so neither fires — the inner scope leaves the
+    outer's transaction intact, and the outer scope still controls whether the
+    data is committed.
+    """
+    conn = _open(tmp_path / "nested.sqlite")
+    conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+
+    # Enter outer transaction (own=True → issues BEGIN).
+    with transaction(conn):
+        conn.execute("INSERT INTO t (id) VALUES (10)")
+
+        # Inner transaction joins (own=False → no BEGIN issued).
+        with transaction(conn):
+            conn.execute("INSERT INTO t (id) VALUES (20)")
+            # Inner succeeds → no COMMIT issued (own=False).  Outer still open.
+
+        # Back in outer scope — inner did not commit, outer still controls.
+
+    # Now the outer scope commits: both rows are durable.
+    assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 2
+
+
+def test_nested_transaction_inner_exception_does_not_rollback_outer(tmp_path):
+    """Inner `transaction(conn)` raises — it must NOT roll back the outer's work.
+
+    The outer scope has already written rows under its own `BEGIN`. When the
+    inner scope raises, its exception handler sees `own = False` and does NOT
+    issue ROLLBACK; the outer scope retains full control of the transaction.
+    """
+    conn = _open(tmp_path / "nested_raise.sqlite")
+    conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+
+    with transaction(conn):
+        conn.execute("INSERT INTO t (id) VALUES (30)")
+        inner_raised = False
+        try:
+            with transaction(conn):
+                conn.execute("INSERT INTO t (id) VALUES (40)")
+                raise RuntimeError("inner boom")
+        except RuntimeError:
+            inner_raised = True
+
+        assert inner_raised
+        # Outer scope's rows must still be there — the inner error did NOT
+        # roll back the outer's transaction.  Both rows are visible within
+        # the still-open outer transaction.
+        assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 2
+
+    # Outer scope commits: both rows are durable.
+    assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 2
+
+    # A fresh connection confirms: both ids 30 and 40 survived.
+    fresh = _open(tmp_path / "nested_raise.sqlite")
+    ids = [r[0] for r in fresh.execute("SELECT id FROM t ORDER BY id").fetchall()]
+    assert ids == [30, 40]
+
+
+def test_nested_transaction_inner_exception_outer_rollback(tmp_path):
+    """Outer `transaction(conn)` rolls back on its own error — data never commits.
+
+    Confirms the full outer-on-error path: the outer scope raises and its
+    ROLLBACK clears all its work, including rows written inside a nested inner
+    scope that never committed.
+    """
+    conn = _open(tmp_path / "nested_outer_rb.sqlite")
+    conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+
+    with pytest.raises(RuntimeError, match="outer boom"):
+        with transaction(conn):
+            conn.execute("INSERT INTO t (id) VALUES (50)")
+            with transaction(conn):
+                conn.execute("INSERT INTO t (id) VALUES (60)")
+            raise RuntimeError("outer boom")
+
+    # Both rows — outer's AND inner's — were rolled back.
+    assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 0
+
+
+def test_top_level_transaction_commits_on_success(tmp_path):
+    """A top-level (own=True) transaction commits normally — baseline."""
+    conn = _open(tmp_path / "top_level_commit.sqlite")
+    conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+
+    with transaction(conn):
+        conn.execute("INSERT INTO t (id) VALUES (100)")
+
+    assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 1
+
+
+def test_top_level_transaction_rolls_back_on_error(tmp_path):
+    """A top-level (own=True) transaction rolls back normally — baseline."""
+    conn = _open(tmp_path / "top_level_rb.sqlite")
+    conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with transaction(conn):
+            conn.execute("INSERT INTO t (id) VALUES (200)")
+            raise RuntimeError("boom")
+
+    assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 0
+
+
+def test_nested_transaction_through_locking_connection(tmp_path):
+    """Nested `transaction(conn)` with a `LockingConnection` proxy follows same rules.
+
+    Repeats the ownership semantics under the proxy that real tool handlers use,
+    ensuring the inner scope does not commit or roll back the outer's work.
+    """
+    raw = _open(tmp_path / "nested_proxy.sqlite")
+    raw.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+    conn = LockingConnection(raw)
+
+    with transaction(conn):
+        conn.execute("INSERT INTO t (id) VALUES (70)")
+
+        with transaction(conn):
+            conn.execute("INSERT INTO t (id) VALUES (80)")
+            # Inner succeeds → no COMMIT issued (own=False).  Outer still open.
+
+        # Back in outer scope — inner did not commit, outer still controls.
+
+    # Outer scope commits: both rows visible.
+    assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 2
