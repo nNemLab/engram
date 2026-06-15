@@ -37,8 +37,3 @@ def embed_many(texts: Sequence[str]) -> list[bytes]:
 
 def _to_bytes(row: np.ndarray) -> bytes:
     return struct.pack(f"{len(row)}f", *row.tolist())
-
-
-def from_bytes(b: bytes) -> np.ndarray:
-    n = len(b) // 4
-    return np.array(struct.unpack(f"{n}f", b), dtype=np.float32)

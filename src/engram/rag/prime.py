@@ -7,6 +7,7 @@ import sqlite3
 from typing import Any
 
 
+# reserved: cwd-scoped priming not yet implemented (see #181)
 def prime(conn: sqlite3.Connection, *, cwd: str | None = None,
           token_budget: int = 1500, max_goals: int = 5, max_entries: int = 5) -> dict[str, Any]:
     goals = conn.execute(
