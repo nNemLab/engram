@@ -9,27 +9,37 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+import sqlite_vec
+
+from engram.common.db import init_schema
 
 REPO = Path(__file__).resolve().parents[2]
 
 
-def _apply_schema(conn):
-    for fn in ("001_initial.sql", "002_sources_and_revisions.sql",
-               "003_grounding.sql", "004_protected.sql"):
-        conn.executescript((REPO / "schema" / fn).read_text())
-
-
 @pytest.fixture
 def conn(tmp_path, monkeypatch):
+    # Apply the FULL schema via the app's init_schema path -- crucially this runs
+    # every migration, including 007's UNIQUE partial index
+    # `content(source_url) WHERE is_current=1`. Earlier this test applied only
+    # 001-004, so the index was absent and the sourced-edit regression it now
+    # guards against was invisible. Mirror the production connection
+    # (isolation_level=None autocommit + sqlite-vec) so the watcher's
+    # `transaction()` and the migration runner behave exactly as in the daemon.
     db = tmp_path / "test.sqlite"
-    c = sqlite3.connect(db)
+    c = sqlite3.connect(db, isolation_level=None, check_same_thread=False)
     c.row_factory = sqlite3.Row
+    c.enable_load_extension(True)
+    sqlite_vec.load(c)
+    c.enable_load_extension(False)
+    c.execute("PRAGMA journal_mode = WAL")
     c.execute("PRAGMA foreign_keys = ON")
-    _apply_schema(c)
+    c.execute("PRAGMA busy_timeout = 5000")
+    init_schema(c, embed_dim=4)
     from types import SimpleNamespace
     fake = SimpleNamespace(rag=SimpleNamespace(near_dup_threshold=0.92))
     monkeypatch.setattr("engram.dedup.load_config", lambda: fake)
     yield c
+    c.close()
 
 
 def _seed_projected_row(conn, *, hash_, body, source_url, vault_path):
@@ -82,6 +92,32 @@ def test_human_edit_creates_new_revision_row(conn, tmp_path):
     assert new["source_url"] == "https://x/p"
     assert new["kind"] == "research"
     assert new["vault_path"] == "030-research/page.md"
+
+
+def test_sourced_edit_with_unique_index_keeps_one_current(conn, tmp_path):
+    """The previously-broken production path: with the one-current-per-source_url
+    index present (schema 007), a human edit of a SOURCED vault file creates the
+    new revision and leaves EXACTLY one is_current=1 row for that source_url.
+
+    The old insert(is_current=1)->promote->demote ordering raised IntegrityError
+    here (INSERT OR IGNORE silently dropped the new revision, then the
+    superseded_by FK failed); the demote-before-promote reorder fixes it.
+    """
+    # Guard: the fixture really did apply the index (so this test can't silently
+    # revert to a pre-007 schema and re-mask the regression).
+    assert conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'index' "
+        "AND name = 'idx_content_one_current_per_url'"
+    ).fetchone() is not None, "schema 007 unique index missing -- test would not exercise the bug"
+
+    old_hash, new_hash, _ = _do_edit(conn, tmp_path)
+
+    current = conn.execute(
+        "SELECT hash FROM content WHERE source_url = ? AND is_current = 1",
+        ("https://x/p",),
+    ).fetchall()
+    assert len(current) == 1, "exactly one current row must remain for the source_url"
+    assert current[0]["hash"] == new_hash
 
 
 def test_old_revision_is_superseded_and_unmutated(conn, tmp_path):

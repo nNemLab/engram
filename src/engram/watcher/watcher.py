@@ -167,31 +167,51 @@ def _on_change(conn: sqlite3.Connection, rel: str, abs_path: str) -> None:
         if old is None:
             logger.warning("vault_state %s references missing content %s; skipping", rel, old_hash)
             return
-        # Atomic (#83): the insert + repoint + supersede + projection refresh is a
-        # 4-statement revision swap. A failure partway through would otherwise
-        # leave two current rows (or a vault_state pointing at a missing row);
-        # ROLLBACK leaves the prior revision intact.
+        # Atomic (#83) revision swap. Ordered demote-before-promote so the
+        # one-current-per-source_url unique index (migration 007) never sees two
+        # is_current=1 rows for this source_url mid-sequence, and the superseded_by
+        # FK is always satisfied (the new hash exists before it is referenced):
+        #   1. insert the new revision NON-current (is_current=0);
+        #   2. demote the old current row and point it at the new hash;
+        #   3. promote the new revision to current -> exactly one current row.
+        # A failure partway through ROLLs BACK, leaving the prior revision intact.
         with transaction(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO content
                    (hash, body, title, source_url, source_tier, fetched_at, confidence,
                     ttl_days, kind, revision, is_current, protected, vault_path, source_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)""",
                 (new_hash, new_body, old["title"], old["source_url"], old["source_tier"],
                  old["fetched_at"], old["confidence"], old["ttl_days"], old["kind"],
                  old["revision"] + 1, rel, old["source_id"]),
             )
-            # Idempotent regardless of whether the row was freshly inserted or already
-            # existed (human edited a file to match other existing content).
-            conn.execute(
-                "UPDATE content SET is_current = 1, protected = 1, vault_path = ?, updated_at = ? "
-                "WHERE hash = ?",
-                (rel, now, new_hash),
-            )
+            # The new revision MUST exist before we reference it below. INSERT OR
+            # IGNORE is a legitimate no-op when the human edited a file to match
+            # already-existing content (the new hash is already a row), so assert the
+            # row's PRESENCE rather than the insert's rowcount. Inserting it
+            # NON-current is also what guarantees it isn't silently dropped: at
+            # is_current=0 it can never collide with the source_url unique index --
+            # the exact hazard the old is_current=1 insert hit, where INSERT OR IGNORE
+            # swallowed the new revision and the swap then failed.
+            if conn.execute(
+                "SELECT 1 FROM content WHERE hash = ?", (new_hash,)
+            ).fetchone() is None:
+                raise RuntimeError(
+                    f"vault_edit: new revision {new_hash} was not inserted; aborting swap"
+                )
+            # Demote the old current row, now that the new hash exists for the FK.
+            # This briefly leaves zero current rows for the source_url -- the partial
+            # index permits zero or one; only TWO would violate it.
             conn.execute(
                 "UPDATE content SET is_current = 0, superseded_by = ?, vault_path = NULL, updated_at = ? "
                 "WHERE hash = ?",
                 (new_hash, now, old_hash),
+            )
+            # Promote the new revision to current+protected -> exactly one current row.
+            conn.execute(
+                "UPDATE content SET is_current = 1, protected = 1, vault_path = ?, updated_at = ? "
+                "WHERE hash = ?",
+                (rel, now, new_hash),
             )
             conn.execute(
                 "UPDATE vault_state SET content_hash = ?, rendered_body = ?, rendered_at = ? "
