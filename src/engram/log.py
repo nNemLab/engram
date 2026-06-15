@@ -9,10 +9,12 @@ detectable by `maintenance.verify` re-walking the chain.
 
 The chain begins at the schema-005 migration boundary: rows written before it keep
 `event_hash = NULL` and are not chained (verify skips them). The first event
-appended after the migration has `prev_hash = ''` (the genesis marker). Appends are
-serialized through a single sqlite connection (see common.db._connect, which opens
-one autocommit connection per process), so the INSERT-then-hash sequence below is
-race-free without explicit locking.
+appended after the migration has `prev_hash = ''` (the genesis marker). The
+INSERT-then-hash sequence below reads the chain head and writes its link in two
+statements, so callers that share the long-lived connection across threads must
+serialize access (and ideally append within a `common.db.transaction`): the
+process-wide lock in `common.db` (#83) provides that serialization for the MCP
+server and watcher daemons.
 """
 from __future__ import annotations
 

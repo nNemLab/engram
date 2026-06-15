@@ -16,7 +16,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from ..common.db import get_connection
+from ..common.db import db_lock, get_connection
 from . import tools as toolmod
 
 logger = logging.getLogger("engram.mcp")
@@ -26,6 +26,16 @@ def build_server() -> Server:
     server = Server("engram")
     conn = get_connection()
     registry = toolmod.build_registry(conn)
+    lock = db_lock()
+
+    def _invoke(handler: Any, args: dict[str, Any]) -> Any:
+        # Tool handlers run on `asyncio.to_thread` worker threads and all share
+        # the one long-lived `conn`. Hold the process-wide DB lock for the whole
+        # handler so concurrent tool calls never drive the single connection at
+        # once (#83) — the multi-statement write paths (dedup gate, resolve,
+        # sources) stay atomic and never race into `database is locked`.
+        with lock:
+            return handler(args)
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
@@ -44,7 +54,7 @@ def build_server() -> Server:
         if not spec:
             return [TextContent(type="text", text=json.dumps({"error": f"unknown tool: {name}"}))]
         try:
-            result = await asyncio.to_thread(spec.handler, arguments or {})
+            result = await asyncio.to_thread(_invoke, spec.handler, arguments or {})
         except Exception as exc:  # noqa: BLE001
             logger.exception("tool failed: %s", name)
             return [TextContent(type="text", text=json.dumps({"error": str(exc), "tool": name}))]
