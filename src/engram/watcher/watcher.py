@@ -113,7 +113,7 @@ def _on_change(conn: sqlite3.Connection, rel: str, abs_path: str) -> None:
         p = Path(abs_path)
         if not p.exists():
             return
-        new_body = p.read_text()
+        new_body = p.read_text(encoding="utf-8")
         row = conn.execute(
             "SELECT content_hash, rendered_body FROM vault_state WHERE vault_path = ?",
             (rel,),
