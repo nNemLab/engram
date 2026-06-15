@@ -243,18 +243,39 @@ def resolve_supersede(
         # one is_current row at each step, satisfying the one-current-per-url index.
         try:
             with transaction(conn):
-                # #153: confirm the upstream revision still exists BEFORE touching
-                # the human row. Demoting first would both trip the superseded_by
-                # FK (if the upstream is gone) and risk leaving the source_url with
-                # ZERO current rows. Abort cleanly so ROLLBACK keeps the human row
-                # current instead.
-                if conn.execute(
-                    "SELECT 1 FROM content WHERE hash = ?", (upstream_hash,)
-                ).fetchone() is None:
+                # #153: confirm the upstream revision exists AND belongs to the SAME
+                # source_url as the human row BEFORE touching anything. A missing
+                # upstream would trip the superseded_by FK and leave the source_url
+                # with zero current rows; an upstream owned by a DIFFERENT source_url
+                # would (after demoting the human row) promote FOREIGN content and
+                # leave the human's source_url at ZERO current rows. The rowcount==1
+                # guard alone can't catch this -- it only confirms one row changed,
+                # not that it's the right source_url's row. Abort cleanly so ROLLBACK
+                # keeps the human row current instead.
+                human_row = conn.execute(
+                    "SELECT source_url FROM content WHERE hash = ?", (human_hash,)
+                ).fetchone()
+                if human_row is None:
+                    raise _SupersedeAbort(
+                        f"cannot accept upstream: human row {human_hash} no longer "
+                        "exists; nothing to supersede"
+                    )
+                human_url = human_row["source_url"]
+                upstream_row = conn.execute(
+                    "SELECT source_url, revision FROM content WHERE hash = ?", (upstream_hash,)
+                ).fetchone()
+                if upstream_row is None:
                     raise _SupersedeAbort(
                         f"cannot accept upstream: revision {upstream_hash} no longer "
                         "exists, so promoting it would leave no current row for the "
                         "source_url; keeping the human row current"
+                    )
+                if upstream_row["source_url"] != human_url:
+                    raise _SupersedeAbort(
+                        f"cannot accept upstream: revision {upstream_hash} belongs to "
+                        f"source_url {upstream_row['source_url']!r}, not the human row's "
+                        f"{human_url!r}; refusing to promote foreign content under the "
+                        "wrong source_url"
                     )
                 conn.execute(
                     "UPDATE content SET is_current = 0, superseded_by = ? WHERE hash = ?",
@@ -273,21 +294,33 @@ def resolve_supersede(
                         f"cannot accept upstream: promoting revision {upstream_hash} "
                         "affected no row; keeping the human row current"
                     )
+                # MINIMUM BAR (#153): the human's source_url must end with EXACTLY ONE
+                # current, non-tombstoned row -- never zero, never two. (NULL
+                # source_url is exempt: the one-current index does not constrain it
+                # and `source_url = NULL` never matches.)
+                if human_url is not None:
+                    n_current = conn.execute(
+                        "SELECT COUNT(*) FROM content "
+                        "WHERE source_url = ? AND is_current = 1 AND tombstoned = 0",
+                        (human_url,),
+                    ).fetchone()[0]
+                    if n_current != 1:
+                        raise _SupersedeAbort(
+                            f"accept upstream would leave source_url {human_url!r} with "
+                            f"{n_current} current rows; aborting"
+                        )
                 conn.execute(
                     "UPDATE contradictions SET resolved = 1, resolution = 'kept_b' WHERE id = ?",
                     (cid,),
                 )
                 # A `superseded` event re-projects the vault file (human bytes -> upstream).
-                source_url_row = conn.execute(
-                    "SELECT source_url, revision FROM content WHERE hash = ?", (upstream_hash,)
-                ).fetchone()
                 event_log.append(
                     conn, "superseded",
                     {
                         "hash_old": human_hash,
                         "hash_new": upstream_hash,
-                        "source_url": source_url_row["source_url"] if source_url_row else None,
-                        "revision": source_url_row["revision"] if source_url_row else None,
+                        "source_url": upstream_row["source_url"],
+                        "revision": upstream_row["revision"],
                         "reason": "resolve_accept_upstream",
                     },
                     actor=actor,
@@ -469,11 +502,20 @@ def _gate_once(
                     # upstream change as a non-current revision and raise a
                     # contradiction instead of overwriting the human's edit. No
                     # `superseded` event -> the projector leaves the vault file alone.
-                    insert_content(
+                    inserted = insert_content(
                         conn, body=body, title=title, source_url=source_url,
                         source_tier=source_tier, confidence=confidence, ttl_days=ttl_days,
                         kind=kind, revision=new_revision, is_current=0, source_id=source_id,
                     )
+                    if not inserted:
+                        # The upstream hash already exists -- a concurrent writer
+                        # committed it (possibly for a DIFFERENT source_url) after our
+                        # in-snapshot reads. Recording a contradiction whose hash_b is
+                        # a foreign-source row would later mis-resolve (accept_upstream
+                        # promoting foreign content and zeroing THIS source_url). Roll
+                        # back and re-resolve instead (#153): the fresh re-read sees
+                        # the now-existing body and reclassifies as exact_dup.
+                        raise _GateRetry()
                     _record_supersede_contradiction(conn, live["hash"], h, source_url, actor)
                     return GateResult(outcome="supersede_blocked", hash=h)
                 # Unprotected supersede. Order matters so we never violate either

@@ -350,6 +350,66 @@ def test_resolve_accept_upstream_missing_upstream_aborts(conn):
     ).fetchone()["resolved"] == 0
 
 
+def test_resolve_accept_upstream_foreign_source_upstream_aborts(conn):
+    """BLOCKING (cross-source lineage): a contradiction whose upstream hash_b
+    points to a row owned by a DIFFERENT source_url must NOT promote that foreign
+    row. accept_upstream would otherwise demote the human row of source A and
+    promote source B's row, leaving A with ZERO current rows and mutating B. The
+    lineage check + exactly-one-current assertion abort instead.
+    """
+    url_a = "https://x/A"
+    url_b = "https://x/B"
+    h_human = content_hash("human edit on A")
+    h_foreign = content_hash("content owned by B")
+    # Protected human row, current under source A.
+    conn.execute(
+        "INSERT INTO content (hash, body, title, source_url, source_tier, confidence, "
+        "kind, revision, is_current, protected) "
+        "VALUES (?, 'human edit on A', 'T', ?, 'vendor-doc', 0.7, 'research', 1, 1, 1)",
+        (h_human, url_a),
+    )
+    # A foreign row, current+protected under a DIFFERENT source B.
+    conn.execute(
+        "INSERT INTO content (hash, body, title, source_url, source_tier, confidence, "
+        "kind, revision, is_current, protected) "
+        "VALUES (?, 'content owned by B', 'T', ?, 'vendor-doc', 0.7, 'research', 1, 1, 1)",
+        (h_foreign, url_b),
+    )
+    # A contradiction (hash_a=human@A, hash_b=foreign@B). The hash_b FK is
+    # satisfied because B's row exists, so this is a normal insert.
+    conn.execute(
+        "INSERT INTO contradictions (hash_a, hash_b, detected_by) VALUES (?, ?, 'poller')",
+        (h_human, h_foreign),
+    )
+
+    result = dedup.resolve_supersede(conn, h_human, "accept_upstream")
+    assert "error" in result, f"expected an error dict, got {result!r}"
+
+    # Source A never goes to zero current rows: the human row stays its sole current.
+    current_a = _current(conn, url_a)
+    assert len(current_a) == 1, "source A must never end with zero current rows"
+    assert current_a[0]["hash"] == h_human
+    # The foreign B row is NOT promoted/mutated under the wrong source_url: still
+    # current under B, still protected, never demoted.
+    b_row = conn.execute(
+        "SELECT source_url, is_current, protected, superseded_by FROM content WHERE hash = ?",
+        (h_foreign,),
+    ).fetchone()
+    assert b_row["source_url"] == url_b
+    assert b_row["is_current"] == 1
+    assert b_row["protected"] == 1
+    assert b_row["superseded_by"] is None
+    # The human row was not demoted and the contradiction was not resolved.
+    human = conn.execute(
+        "SELECT is_current, superseded_by FROM content WHERE hash = ?", (h_human,)
+    ).fetchone()
+    assert human["is_current"] == 1
+    assert human["superseded_by"] is None
+    assert conn.execute(
+        "SELECT resolved FROM contradictions WHERE hash_a = ?", (h_human,)
+    ).fetchone()["resolved"] == 0
+
+
 # --- schema 007: backfill + clean apply -------------------------------------
 
 
