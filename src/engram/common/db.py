@@ -272,6 +272,18 @@ def init_schema(conn: sqlite3.Connection, embed_dim: int = 384) -> None:
 _MIGRATION_THREAD_LOCK = threading.Lock()
 
 
+# Matches an SQL line comment (`-- ...` to EOL) or block comment (`/* ... */`).
+# Used ONLY to decide whether trailing post-last-`;` leftover is droppable
+# comments vs. a genuine unterminated statement -- NOT for statement splitting,
+# which defers entirely to sqlite3.complete_statement below.
+_SQL_COMMENT_RE = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
+
+
+def _is_blank_or_comments(text: str) -> bool:
+    """True if `text` holds only whitespace and SQL comments (no executable token)."""
+    return not _SQL_COMMENT_RE.sub("", text).strip()
+
+
 def _split_sql_statements(script: str) -> list[str]:
     """Split a migration script into individually-executable statements.
 
@@ -279,71 +291,38 @@ def _split_sql_statements(script: str) -> list[str]:
     a multi-statement migration that fails partway leaves the earlier statements
     committed (#160). To apply a migration atomically we run each statement via
     `conn.execute` inside one explicit BEGIN/COMMIT, which means splitting the
-    script on statement boundaries ourselves.
+    script into single statements first.
 
-    The splitter is a small character scanner that tracks the three contexts in
-    which a `;` is NOT a statement terminator: inside a single-quoted string
-    literal (with `''` escaping), inside a `-- ...` line comment, and inside a
-    `/* ... */` block comment. Each statement's text (its comments included) is
-    preserved verbatim and `strip`ped; fragments with no SQL token -- a leading
-    license header, the whitespace after the final `;` -- are dropped so they
-    are never handed to `execute`.
+    Statement boundaries come from SQLite's own completeness rule
+    (`sqlite3.complete_statement`), NOT a hand-rolled `;` scanner. That matters
+    because a `;` is not a terminator inside string literals, double-quoted
+    identifiers, `--`/`/* */` comments, AND -- crucially -- inside a compound
+    `CREATE TRIGGER ... BEGIN <body; with; internal; semicolons> END;` (or
+    `CREATE VIEW`) body. complete_statement understands all of these, so a
+    future trigger/view migration is kept intact instead of mis-split into
+    broken fragments. We append characters and close a statement the moment the
+    buffer (which just ended at a `;`) is a complete statement, so each returned
+    chunk is exactly one statement, its comments included and `strip`ped.
+
+    Trailing content after the final `;` that is only whitespace/comments (a
+    license header, a closing remark) is dropped. Any other leftover is an
+    unterminated statement and raises ValueError rather than being silently
+    dropped, so a malformed migration fails loudly.
     """
     statements: list[str] = []
-    buf: list[str] = []
-    has_sql = False  # did this fragment contain a non-comment, non-space token?
-    in_string = False
-    i = 0
-    n = len(script)
-    while i < n:
-        ch = script[i]
-        nxt = script[i + 1] if i + 1 < n else ""
-        if in_string:
-            buf.append(ch)
-            if ch == "'":
-                if nxt == "'":  # doubled quote: an escaped ', not the end
-                    buf.append(nxt)
-                    i += 2
-                    continue
-                in_string = False
-            i += 1
-            continue
-        if ch == "-" and nxt == "-":  # line comment to end of line
-            while i < n and script[i] != "\n":
-                buf.append(script[i])
-                i += 1
-            continue
-        if ch == "/" and nxt == "*":  # block comment to closing */
-            buf.append(ch)
-            buf.append(nxt)
-            i += 2
-            while i < n and not (script[i] == "*" and i + 1 < n and script[i + 1] == "/"):
-                buf.append(script[i])
-                i += 1
-            if i < n:
-                buf.append("*")
-                buf.append("/")
-                i += 2
-            continue
-        if ch == "'":
-            in_string = True
-            has_sql = True
-            buf.append(ch)
-            i += 1
-            continue
-        if ch == ";":
-            if has_sql:
-                statements.append(("".join(buf) + ";").strip())
-            buf = []
-            has_sql = False
-            i += 1
-            continue
-        if not ch.isspace():
-            has_sql = True
-        buf.append(ch)
-        i += 1
-    if has_sql:  # trailing statement with no terminating semicolon
-        statements.append("".join(buf).strip())
+    buf = ""
+    for ch in script:
+        buf += ch
+        # A statement can only complete at a `;`; gate the (relatively costly)
+        # completeness check on that so we don't call it per character.
+        if ch == ";" and sqlite3.complete_statement(buf):
+            statements.append(buf.strip())
+            buf = ""
+    if buf.strip() and not _is_blank_or_comments(buf):
+        raise ValueError(
+            "migration script ends with an unterminated SQL statement "
+            f"(missing ';'): {buf.strip()[:120]!r}"
+        )
     return statements
 
 
