@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .. import log as event_log
 from ..common.config import load_config
-from ..common.db import get_connection
+from ..common.db import get_connection, transaction
 from .renderers import RENDERERS
 
 logger = logging.getLogger("engram.projector")
@@ -72,15 +72,21 @@ def _project_one(conn: sqlite3.Connection, vault: Path, content_hash: str, kind_
     # mismatch, and fabricate a spurious actor="human" vault_edit. Making the row
     # committed/visible cross-process first closes that window; the in-process
     # RLock (#83/#112) cannot serialize across processes.
-    conn.execute(
-        "INSERT INTO vault_state (vault_path, content_hash, rendered_body, rendered_at) "
-        "VALUES (?, ?, ?, ?) "
-        "ON CONFLICT(vault_path) DO UPDATE SET content_hash=excluded.content_hash, "
-        "rendered_body=excluded.rendered_body, rendered_at=excluded.rendered_at",
-        (rel_path, content_hash, body, now),
-    )
-    conn.execute("UPDATE content SET vault_path = ? WHERE hash = ?", (rel_path, content_hash))
-    conn.commit()
+    #
+    # #152: the two DB writes are one atomic unit -- a failure must not leave
+    # vault_state pointing at this hash with content.vault_path unset (or vice
+    # versa). The transaction COMMITS at the end of the `with` block, strictly
+    # BEFORE the file write below, preserving the #96 DB-before-file ordering.
+    with transaction(conn):
+        conn.execute(
+            "INSERT INTO vault_state (vault_path, content_hash, rendered_body, rendered_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(vault_path) DO UPDATE SET content_hash=excluded.content_hash, "
+            "rendered_body=excluded.rendered_body, rendered_at=excluded.rendered_at",
+            (rel_path, content_hash, body, now),
+        )
+        conn.execute("UPDATE content SET vault_path = ? WHERE hash = ?", (rel_path, content_hash))
+    # DB writes are now durable; only then write the file (#96).
     _atomic_write(abs_path, body)
 
 
@@ -132,17 +138,22 @@ def _handle_event(conn: sqlite3.Connection, vault: Path, evt: event_log.Event,
             # commit vault_state to the NEW revision's body before the file
             # write, so the watcher never reads the OLD rendered_body against
             # the NEW on-disk bytes and misclassifies it as a human edit.
-            conn.execute("DELETE FROM vault_state WHERE content_hash = ?", (hash_old,))
-            conn.execute(
-                "INSERT INTO vault_state (vault_path, content_hash, rendered_body, rendered_at) "
-                "VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(vault_path) DO UPDATE SET content_hash=excluded.content_hash, "
-                "rendered_body=excluded.rendered_body, rendered_at=excluded.rendered_at",
-                (old_path, hash_new, body, now),
-            )
-            conn.execute("UPDATE content SET vault_path = ? WHERE hash = ?",
-                         (old_path, hash_new))
-            conn.commit()
+            #
+            # #152: the three DB writes are one atomic unit, committed at the end
+            # of the `with` block strictly BEFORE the file write (preserving the
+            # #96 DB-before-file ordering).
+            with transaction(conn):
+                conn.execute("DELETE FROM vault_state WHERE content_hash = ?", (hash_old,))
+                conn.execute(
+                    "INSERT INTO vault_state (vault_path, content_hash, rendered_body, rendered_at) "
+                    "VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(vault_path) DO UPDATE SET content_hash=excluded.content_hash, "
+                    "rendered_body=excluded.rendered_body, rendered_at=excluded.rendered_at",
+                    (old_path, hash_new, body, now),
+                )
+                conn.execute("UPDATE content SET vault_path = ? WHERE hash = ?",
+                             (old_path, hash_new))
+            # DB writes are now durable; only then replace the file (#96).
             _atomic_write(abs_path, body)
 
 

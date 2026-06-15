@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ... import log as event_log
+from ...common.db import transaction
 
 
 def _now() -> str:
@@ -22,14 +23,16 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
         priority = int(args.get("priority", 0))
         metadata = json.dumps(args.get("metadata", {}))
         now = _now()
-        conn.execute(
-            "INSERT INTO goals (id, text, status, priority, metadata, created_at, updated_at) "
-            "VALUES (?, ?, 'active', ?, ?, ?, ?) "
-            "ON CONFLICT(id) DO UPDATE SET text=excluded.text, priority=excluded.priority, "
-            "metadata=excluded.metadata, updated_at=excluded.updated_at",
-            (gid, text, priority, metadata, now, now),
-        )
-        event_log.append(conn, "goal_set", {"goal_id": gid, "text": text}, actor="agent")
+        # #152: the goal upsert and its `goal_set` event are one atomic unit.
+        with transaction(conn):
+            conn.execute(
+                "INSERT INTO goals (id, text, status, priority, metadata, created_at, updated_at) "
+                "VALUES (?, ?, 'active', ?, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET text=excluded.text, priority=excluded.priority, "
+                "metadata=excluded.metadata, updated_at=excluded.updated_at",
+                (gid, text, priority, metadata, now, now),
+            )
+            event_log.append(conn, "goal_set", {"goal_id": gid, "text": text}, actor="agent")
         return {"id": gid}
 
     def list_(args: dict[str, Any]) -> list[dict[str, Any]]:
@@ -43,13 +46,16 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
 
     def resolve(args: dict[str, Any]) -> dict[str, Any]:
         gid = args["id"]
-        cur = conn.execute(
-            "UPDATE goals SET status = 'resolved', updated_at = ? WHERE id = ?",
-            (_now(), gid),
-        )
-        if cur.rowcount == 0:
-            return {"error": "not found", "id": gid}
-        event_log.append(conn, "goal_resolved", {"goal_id": gid}, actor="agent")
+        # #152: the status update and its `goal_resolved` event are one atomic
+        # unit. A no-op update (goal not found) commits nothing and emits nothing.
+        with transaction(conn):
+            cur = conn.execute(
+                "UPDATE goals SET status = 'resolved', updated_at = ? WHERE id = ?",
+                (_now(), gid),
+            )
+            if cur.rowcount == 0:
+                return {"error": "not found", "id": gid}
+            event_log.append(conn, "goal_resolved", {"goal_id": gid}, actor="agent")
         return {"id": gid, "status": "resolved"}
 
     return {
