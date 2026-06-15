@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 from . import log as event_log
 from .common.config import load_config
+from .rag._cosine import l2_to_cosine
 
 Outcome = Literal["new", "exact_dup", "near_dup", "contradicts", "superseded", "supersede_blocked"]
 
@@ -60,7 +61,7 @@ def find_near(conn: sqlite3.Connection, embedding: bytes, threshold: float) -> t
     row = cur.fetchone()
     if not row:
         return None
-    similarity = 1.0 - float(row["distance"])
+    similarity = l2_to_cosine(float(row["distance"]))
     if similarity >= threshold:
         return row["content_hash"], similarity
     return None

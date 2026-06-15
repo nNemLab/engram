@@ -11,6 +11,7 @@ from .. import log as event_log
 from ..common.config import load_config
 from ..rag import chunk as chunker
 from ..rag import embed as embedder
+from ..rag._cosine import l2_to_cosine
 
 logger = logging.getLogger("engram.reactor.handlers")
 
@@ -43,7 +44,7 @@ def on_ingested(conn: sqlite3.Connection, evt: event_log.Event) -> None:
     ).fetchall()
     near = next((r for r in rows if r["content_hash"] != h), None)
     if near:
-        sim = 1.0 - float(near["distance"])
+        sim = l2_to_cosine(float(near["distance"]))
         if sim >= cfg.rag.near_dup_threshold:
             kept = near["content_hash"]
             conn.execute("UPDATE content SET tombstoned = 1 WHERE hash = ?", (h,))
