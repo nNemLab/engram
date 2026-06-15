@@ -81,6 +81,8 @@ class MediaWikiApiAdapter:
             if html is None:
                 continue
             extracted = trafilatura.extract(html, include_comments=False) or html
+            if not extracted or not extracted.strip():
+                continue
             url_title = quote(title.replace(" ", "_"), safe=":/_()")
             yield Candidate(
                 source_url=f"{wiki_root}/wiki/{url_title}",

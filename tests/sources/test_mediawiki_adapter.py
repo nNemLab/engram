@@ -270,3 +270,44 @@ async def test_recentchanges_pagination():
     cands = [c async for c in adapter.fetch(src)]
     titles = sorted(c.title for c in cands)
     assert titles == ["P1", "P2"]
+
+
+@pytest.mark.asyncio
+async def test_empty_body_candidates_are_skipped():
+    """Pages whose parse yields empty/whitespace body are skipped, not yielded."""
+    allpages = (FIX / "allpages_response.json").read_text()
+
+    def h(req):
+        action = req.url.params.get("action")
+        if action == "query":
+            return httpx.Response(200, text=allpages)
+        # Parse returns empty text — should be skipped
+        return httpx.Response(200, text=json.dumps({
+            "parse": {"title": "Engine", "text": {"*": ""}}
+        }))
+
+    transport = httpx.MockTransport(h)
+    adapter = MediaWikiApiAdapter(_client=httpx.AsyncClient(transport=transport))
+    src = _src()
+    cands = [c async for c in adapter.fetch(src)]
+    assert cands == []  # empty body → skipped
+
+
+@pytest.mark.asyncio
+async def test_whitespace_only_body_is_skipped():
+    """Whitespace-only text is also skipped."""
+    allpages = (FIX / "allpages_response.json").read_text()
+
+    def h(req):
+        action = req.url.params.get("action")
+        if action == "query":
+            return httpx.Response(200, text=allpages)
+        return httpx.Response(200, text=json.dumps({
+            "parse": {"title": "Engine", "text": {"*": "   \n  "}}
+        }))
+
+    transport = httpx.MockTransport(h)
+    adapter = MediaWikiApiAdapter(_client=httpx.AsyncClient(transport=transport))
+    src = _src()
+    cands = [c async for c in adapter.fetch(src)]
+    assert cands == []

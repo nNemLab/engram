@@ -1,7 +1,6 @@
 """Adapter protocol, Candidate dataclass, ADAPTERS registry, glob filter."""
 from __future__ import annotations
 
-import fnmatch
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -37,15 +36,43 @@ class Adapter(Protocol):
 # ----- Glob filter helper ------------------------------------------------
 
 def _glob_to_regex(pattern: str) -> re.Pattern[str]:
-    """Translate a shell glob (with ** for any-depth) to a regex.
+    """Translate a shell glob (with * / ? / **) to a regex.
 
-    fnmatch.translate handles single * and ? but treats ** identically to *.
-    We pre-substitute a sentinel for ** so multi-segment matches work.
+    *  matches within one path segment  →  [^/]*
+    ** matches across any number of segments (including zero)  →  .*
+    ?  matches a single character  →  [^/]  (single-char, no slash)
+    Everything else is literal-escaped.
     """
-    SENTINEL = "\x00DOUBLESTAR\x00"
-    pat = pattern.replace("**", SENTINEL)
-    regex = fnmatch.translate(pat)
-    regex = regex.replace(re.escape(SENTINEL), ".*")
+    segments = pattern.split("/")
+    regex_parts: list[str] = []
+    for i, seg in enumerate(segments):
+        parts: list[str] = []
+        j = 0
+        was_double_star = False
+        while j < len(seg):
+            if seg[j] == "*":
+                if j + 1 < len(seg) and seg[j + 1] == "*":
+                    parts.append(".*")
+                    j += 2
+                    was_double_star = True
+                else:
+                    parts.append("[^/]*")
+                    j += 1
+                    was_double_star = False
+            elif seg[j] == "?":
+                parts.append("[^/]")
+                j += 1
+                was_double_star = False
+            else:
+                parts.append(re.escape(seg[j]))
+                j += 1
+                was_double_star = False
+        regex_parts.append("".join(parts))
+        # Only add a literal '/' between segments if the last part wasn't "**"
+        # — "**" is zero-or-more-segments and its ".*" already spans slashes.
+        if i < len(segments) - 1 and not was_double_star:
+            regex_parts.append("/")
+    regex = "^" + "".join(regex_parts) + "$"
     return re.compile(regex)
 
 

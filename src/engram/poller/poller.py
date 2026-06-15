@@ -3,6 +3,7 @@ push candidates through dedup.gate, update source state in one tx."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sqlite3
 from datetime import UTC, datetime
@@ -62,10 +63,13 @@ async def poll_one(conn: sqlite3.Connection, source: dict[str, Any]) -> dict[str
         async for cand in adapter.fetch(src_dict):
             counts["candidates_seen"] += 1
             try:
+                src_cfg = json.loads(source.get("config") or "{}")
                 r = gate(
                     conn, body=cand.body, title=cand.title,
                     source_url=cand.source_url, source_tier=source["source_tier"],
-                    confidence=0.7, kind="research", source_id=source["id"],
+                    confidence=src_cfg.get("confidence", 0.7),
+                    kind=src_cfg.get("kind", "research"),
+                    source_id=source["id"],
                 )
                 if r.outcome == "new":
                     counts["ingested"] += 1

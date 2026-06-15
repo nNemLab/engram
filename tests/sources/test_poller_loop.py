@@ -186,7 +186,7 @@ async def test_concurrent_sources_do_not_share_adapter_rate_limiter(monkeypatch)
 
     monkeypatch.setattr(SitemapAdapter, "_collect_urls", collect_with_barrier)
 
-    base_cfg = {"include": ["*/engine/*"], "exclude": ["*/macos/*"]}
+    base_cfg = {"include": ["**/engine/**"], "exclude": ["**/macos/**"]}
     src_a = {"id": "a", "url": "https://docs.example.com/sitemap.xml",
              "config": json.dumps({**base_cfg, "request_interval_ms": 100}), "cursor": None}
     src_b = {"id": "b", "url": "https://docs.example.com/sitemap.xml",
@@ -219,3 +219,61 @@ async def test_due_query_skips_paused_and_future(conn):
     due = select_due(conn)
     ids = sorted(s["id"] for s in due)
     assert ids == ["past"]
+
+
+@pytest.mark.asyncio
+async def test_poll_one_reads_confidence_kind_from_source_config(conn, monkeypatch):
+    """Per-source config overrides confidence and kind; defaults apply when absent."""
+    from engram.poller.adapters import ADAPTERS, Candidate
+    from engram.poller.poller import poll_one
+
+    captured: list[dict] = []
+
+    def mock_gate(conn, **kw):
+        captured.append(kw)
+        from types import SimpleNamespace
+        return SimpleNamespace(outcome="new")
+
+    monkeypatch.setattr("engram.poller.poller.gate", mock_gate)
+
+    # Source with explicit config values
+    fake = FakeAdapter([Candidate(source_url="https://x/a", body="A body", title="A")])
+    monkeypatch.setitem(ADAPTERS, "fake", fake)
+    conn.execute(
+        "INSERT INTO sources (id, name, adapter, url, schedule, source_tier, config) "
+        "VALUES ('s1', 'Test', 'fake', 'https://x', '1d', 'manual', "
+        "'{\"confidence\": 0.95, \"kind\": \"article\"}')",
+    )
+    src = dict(conn.execute("SELECT * FROM sources WHERE id='s1'").fetchone())
+    await poll_one(conn, src)
+
+    assert captured[0]["confidence"] == 0.95
+    assert captured[0]["kind"] == "article"
+
+
+@pytest.mark.asyncio
+async def test_poll_one_defaults_confidence_kind_when_omitted(conn, monkeypatch):
+    """When config omits confidence/kind, defaults (0.7, "research") apply."""
+    from engram.poller.adapters import ADAPTERS, Candidate
+    from engram.poller.poller import poll_one
+
+    captured: list[dict] = []
+
+    def mock_gate(conn, **kw):
+        captured.append(kw)
+        from types import SimpleNamespace
+        return SimpleNamespace(outcome="new")
+
+    monkeypatch.setattr("engram.poller.poller.gate", mock_gate)
+
+    fake = FakeAdapter([Candidate(source_url="https://x/a", body="A body", title="A")])
+    monkeypatch.setitem(ADAPTERS, "fake", fake)
+    conn.execute(
+        "INSERT INTO sources (id, name, adapter, url, schedule, source_tier, config) "
+        "VALUES ('s1', 'Test', 'fake', 'https://x', '1d', 'manual', '{}')",
+    )
+    src = dict(conn.execute("SELECT * FROM sources WHERE id='s1'").fetchone())
+    await poll_one(conn, src)
+
+    assert captured[0]["confidence"] == 0.7
+    assert captured[0]["kind"] == "research"

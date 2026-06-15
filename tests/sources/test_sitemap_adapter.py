@@ -17,8 +17,8 @@ def _build_source(**overrides) -> dict:
         "id": "test",
         "url": "https://docs.example.com/sitemap.xml",
         "config": json.dumps({
-            "include": ["*/engine/*"],
-            "exclude": ["*/macos/*"],
+            "include": ["**/engine/**"],
+            "exclude": ["**/macos/**"],
         }),
         "cursor": None,
     }
