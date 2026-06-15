@@ -56,7 +56,32 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
         except safe_fetch.UnsafeURLError as e:
             return {"error": str(e)}
         r.raise_for_status()
-        body = trafilatura.extract(r.text, include_comments=False, include_tables=True)
+
+        # Guard: ONLY HTML responses reach trafilatura.
+        ct = r.headers.get("content-type", "").lower()
+        # Strip any charset / params — we only care about the media type.
+        media_type = ct.split(";")[0].strip()
+        if media_type not in ("text/html", "application/xhtml+xml"):
+            return {
+                "error": f"unsupported content-type {ct!r} for {url} "
+                         "(expected HTML — use a .html URL or "
+                         "provide body directly via research.fetch_url)",
+            }
+        # Sanity check: refuse PDF / other binaries that slip through.
+        # Strip leading whitespace and BOM so `%PDF` is found even when
+        # a BOM / whitespace prefix is present.
+        raw = r.content.lstrip(b"\xef\xbb\xbf \t\n\r")
+        if raw[:4] == b"%PDF":
+            return {
+                "error": f"refusing PDF response for {url} "
+                         "(PDF extraction is not supported by ingest_url — "
+                         "use an HTML URL or provide body via "
+                         "research.fetch_url)",
+            }
+
+        body = trafilatura.extract(
+            r.text, include_comments=False, include_tables=True,
+        )
         if not body:
             return {"error": f"trafilatura returned no content for {url}"}
         meta = trafilatura.extract_metadata(r.text)
@@ -143,7 +168,9 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
             "handler": fetch_url,
         },
         "research.ingest_url": {
-            "description": "Server-side fetch + trafilatura extract + gate. One-shot URL ingest.",
+            "description": "Server-side fetch + trafilatura extract + gate. One-shot URL ingest. "
+                           "Only accepts HTML/text content-types; rejects PDFs and other binary "
+                           "responses with a structured error.",
             "input_schema": {
                 "type": "object", "required": ["url"],
                 "properties": {
@@ -173,7 +200,8 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
             "description": "Search arXiv (titles + abstracts), reranked by cross-encoder. "
                            "Multi-word queries are auto-quoted (exact phrase) by default — set "
                            "quote_phrase=false for broad keyword OR-search. "
-                           "Use the pdf_url with research.ingest_url to store the full paper.",
+                           "Returns abstracts only. For full papers, download the PDF separately "
+                           "and use research.fetch_url with the extracted text.",
             "input_schema": {
                 "type": "object", "required": ["query"],
                 "properties": {
