@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import UTC
+from datetime import UTC, datetime
 
 from .. import log as event_log
 from ..common.config import load_config
@@ -73,7 +73,6 @@ def on_retrieved(conn: sqlite3.Connection, evt: event_log.Event) -> None:
     )
     if not hashes:
         return
-    from datetime import datetime
     now_utc = datetime.now(UTC)
     threshold = cfg.reactor.retrieval_staleness_threshold
 
