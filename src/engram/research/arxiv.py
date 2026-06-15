@@ -49,18 +49,25 @@ def search(query: str, *, k: int = 5, fetch_multiplier: int = 3,
     )
 
     results: list[ArxivResult] = []
-    for r in client.results(search_query):
-        published = r.published.isoformat() if isinstance(r.published, datetime) else str(r.published)
-        results.append(ArxivResult(
-            arxiv_id=r.entry_id.rsplit("/", 1)[-1],
-            title=r.title.strip().replace("\n", " "),
-            abstract=(r.summary or "").strip().replace("\n", " "),
-            authors=[a.name for a in r.authors],
-            published=published,
-            pdf_url=r.pdf_url,
-            abs_url=r.entry_id,
-            score=0.0,
-        ))
+    try:
+        for r in client.results(search_query):
+            try:
+                published = r.published.isoformat() if isinstance(r.published, datetime) else str(r.published)
+                results.append(ArxivResult(
+                    arxiv_id=r.entry_id.rsplit("/", 1)[-1],
+                    title=r.title.strip().replace("\n", " "),
+                    abstract=(r.summary or "").strip().replace("\n", " "),
+                    authors=[a.name for a in r.authors],
+                    published=published,
+                    pdf_url=r.pdf_url,
+                    abs_url=r.entry_id,
+                    score=0.0,
+                ))
+            except Exception:
+                continue
+    except Exception as e:
+        if not results:
+            raise RuntimeError(f"arXiv search failed for query {query!r}: {e}") from e
 
     if not results:
         return []
