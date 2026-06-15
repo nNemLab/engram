@@ -34,6 +34,7 @@ node_modules/
 
 # Claude Code / agent harness files (local to the workstation, not project source)
 .polly/
+.worktrees/
 CLAUDE.md
 CLAUDE.local.md
 .claude/
