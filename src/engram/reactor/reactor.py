@@ -37,7 +37,17 @@ def run() -> None:
     while True:
         try:
             last = cursor
-            for evt in event_log.since(conn, cursor, types=types):
+            for evt in event_log.since(conn, cursor, types=types, yield_poison=True):
+                if evt.poison:
+                    # Dead-letter an un-parseable payload and advance past it so
+                    # one corrupt row can't freeze the loop and drop every later
+                    # event (#84).
+                    logger.warning(
+                        "reactor skipping poison event id=%d (unparseable payload)",
+                        evt.id,
+                    )
+                    last = evt.id
+                    continue
                 handler = HANDLERS.get(evt.type)
                 if handler:
                     try:

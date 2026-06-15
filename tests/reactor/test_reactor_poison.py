@@ -1,0 +1,135 @@
+"""#101: a single un-parseable event payload must not freeze the reactor.
+
+A poison row (corrupt JSON payload) sitting between two good events must be
+dead-lettered and skipped: the cursor advances past it and later good events
+are still processed, instead of the loop restarting from the same poison row
+forever and silently dropping everything after it.
+"""
+import sqlite3
+from types import SimpleNamespace
+
+import pytest
+import sqlite_vec
+
+from engram.common.db import init_schema
+
+DIM = 4
+
+
+def _conn(tmp_path):
+    c = sqlite3.connect(tmp_path / "t.sqlite")
+    c.row_factory = sqlite3.Row
+    c.enable_load_extension(True)
+    sqlite_vec.load(c)
+    c.enable_load_extension(False)
+
+    init_schema(c, embed_dim=DIM)
+    return c
+
+
+def _seed_content(conn, h, body):
+    conn.execute(
+        "INSERT INTO content (hash, body, title, source_url, source_tier, "
+        "confidence, kind, tombstoned) "
+        "VALUES (?, ?, ?, 'https://x/p', 'vendor-doc', 0.7, 'kb', 0)",
+        (h, body, body),
+    )
+
+
+class _StopTick(Exception):
+    """Sentinel raised from a patched time.sleep to end run() after one tick."""
+
+
+def test_run_skips_poison_event_between_good_events(tmp_path, monkeypatch):
+    from engram import log as event_log
+    from engram.dedup import content_hash
+    from engram.reactor import handlers as H
+    from engram.reactor import reactor as rmod
+
+    conn = _conn(tmp_path)
+    h_a = content_hash("body A")
+    h_b = content_hash("body B")
+    _seed_content(conn, h_a, "body A")
+    _seed_content(conn, h_b, "body B")
+
+    # event order: good (A) -> poison -> good (B)
+    event_log.append(conn, "ingested", {"hash": h_a})
+    poison_id = event_log.append(conn, "ingested", {"hash": "unused"})
+    conn.execute("UPDATE events SET payload = ? WHERE id = ?", ("{not valid json", poison_id))
+    last_id = event_log.append(conn, "ingested", {"hash": h_b})
+    conn.commit()
+
+    fake_cfg = SimpleNamespace(
+        rag=SimpleNamespace(chunk_size_tokens=512, chunk_overlap_tokens=64,
+                            near_dup_threshold=0.92),
+        reactor=SimpleNamespace(retrieval_staleness_threshold=0.5),
+    )
+    # Patch load_config where the handlers import it.
+    monkeypatch.setattr(H, "load_config", lambda: fake_cfg)
+    # Mock embedder/chunker so on_ingested doesn't crash on good events.
+    monkeypatch.setattr(H.embedder, "embed_one", lambda text: b"\x00" * (DIM * 4))
+    monkeypatch.setattr(H.chunker, "chunk_markdown", lambda *a, **k: ["chunk"])
+    monkeypatch.setattr(H.chunker, "embed_prefix", lambda body, n: body)
+
+    monkeypatch.setattr(rmod, "get_connection", lambda: conn)
+
+    def _stop(_):
+        raise _StopTick
+
+    monkeypatch.setattr(rmod.time, "sleep", _stop)
+    with pytest.raises(_StopTick):
+        rmod.run()
+
+    # The later good event (B) was still processed despite the poison row.
+    assert conn.execute(
+        "SELECT 1 FROM embeddings WHERE content_hash = ?", (h_b,)
+    ).fetchone() is not None
+
+    # The cursor advanced PAST the poison row (loop is not stuck).
+    cursor = conn.execute(
+        "SELECT last_event_id FROM daemon_cursors WHERE name = 'reactor'"
+    ).fetchone()["last_event_id"]
+    assert cursor == last_id
+
+
+def test_poison_event_does_not_trigger_handlers(tmp_path, monkeypatch):
+    """A poison row should skip handler dispatch entirely."""
+    from engram import log as event_log
+    from engram.reactor import handlers as H
+    from engram.reactor import reactor as rmod
+
+    conn = _conn(tmp_path)
+    _seed_content(conn, "hash_X", "body X")
+
+    # Poison event only — no good events at all.
+    poison_id = event_log.append(conn, "ingested", {"hash": "unused"})
+    conn.execute("UPDATE events SET payload = ? WHERE id = ?", ("{broken", poison_id))
+    conn.commit()
+
+    monkeypatch.setattr(rmod, "get_connection", lambda: conn)
+
+    # Patch on_ingested so we can verify it is never called.
+    ingest_called = []
+    real_on_ingested = H.on_ingested
+
+    def _count_calls(conn, evt):
+        ingest_called.append(evt.id)
+        return real_on_ingested(conn, evt)
+
+    monkeypatch.setattr(H, "on_ingested", _count_calls)
+
+    def _stop(_):
+        raise _StopTick
+
+    monkeypatch.setattr(rmod.time, "sleep", _stop)
+    with pytest.raises(_StopTick):
+        rmod.run()
+
+    # No handler was dispatched for the poison event.
+    assert ingest_called == []
+
+    # Cursor still advanced past the poison row.
+    cursor = conn.execute(
+        "SELECT last_event_id FROM daemon_cursors WHERE name = 'reactor'"
+    ).fetchone()["last_event_id"]
+    assert cursor == poison_id
