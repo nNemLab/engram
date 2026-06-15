@@ -88,6 +88,16 @@ async def poll_one(conn: sqlite3.Connection, source: dict[str, Any]) -> dict[str
             actor="poller",
         )
 
+    # Gate-path failures: when gate() raises for candidates, error_msg stays
+    # None unless the adapter.fetch() also errored.  A source whose gate() fails
+    # on every candidate should eventually trip the circuit breaker, but a
+    # single bad candidate among many successes must NOT.  Count a gate-path
+    # failure as a source error only when the source made zero progress this
+    # tick (candidates_seen>0 AND ingested==0 AND errors>0).
+    if error_msg is None and counts["candidates_seen"] > 0 \
+       and counts["ingested"] == 0 and counts["errors"] > 0:
+        error_msg = "gate() failed on all candidates this tick"
+
     interval = parse_interval(source["schedule"])
     next_at = (datetime.now(UTC) + interval).strftime("%Y-%m-%dT%H:%M:%SZ")
     new_error_count = (source["error_count"] or 0) + 1 if error_msg else 0
