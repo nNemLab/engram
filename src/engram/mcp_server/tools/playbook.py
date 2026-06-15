@@ -134,6 +134,8 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
         )
         try:
             stdout_b, stderr_b = proc.communicate(timeout=timeout_seconds)
+            stdout_b = stdout_b or b""
+            stderr_b = stderr_b or b""
         except subprocess.TimeoutExpired:
             timeout_hit = True
             error = f"playbook timed out after {timeout_seconds}s"
@@ -141,16 +143,18 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
             # don't survive the timeout.
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (OSError, ProcessLookupError):
+            except OSError:
                 pass  # process already exited or not in our session
             # Drain remaining output and reap the process.
             stdout_b, stderr_b = proc.communicate()
             stdout_b = stdout_b or b""
             stderr_b = stderr_b or b""
 
-        stdout = stdout_b.decode() if isinstance(stdout_b, bytes) else stdout_b
-        stderr = stderr_b.decode() if isinstance(stderr_b, bytes) else stderr_b
-        exit_code = proc.returncode
+        stdout = stdout_b.decode(errors="replace") if isinstance(stdout_b, bytes) else stdout_b
+        stderr = stderr_b.decode(errors="replace") if isinstance(stderr_b, bytes) else stderr_b
+        # SIGKILL → proc.returncode == -9; preserve the prior contract of
+        # exit_code=None so callers know "timed out, no exit code".
+        exit_code = None if timeout_hit else proc.returncode
 
         (run_dir / "stdout.log").write_text(stdout)
         (run_dir / "stderr.log").write_text(stderr)

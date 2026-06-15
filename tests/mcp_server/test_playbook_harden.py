@@ -90,7 +90,7 @@ def test_killpg_called_on_timeout(tmp_path, monkeypatch, conn):
 
     mock_proc = mock.Mock()
     mock_proc.pid = 99999
-    mock_proc.returncode = None  # timeout path
+    mock_proc.returncode = -9  # SIGKILL
     # side_effect as list: first call raises, second call (drain) returns
     mock_proc.communicate.side_effect = [
         subprocess.TimeoutExpired(cmd="papermill", timeout=0.25, output=b"", stderr=b""),
@@ -110,6 +110,7 @@ def test_killpg_called_on_timeout(tmp_path, monkeypatch, conn):
 
         mock_killpg.assert_called_once_with(99999, signal.SIGKILL)
         assert out["timeout"] is True
+        # SIGKILL → returncode=-9, but the contract preserves None for clarity
         assert out["exit_code"] is None
 
 
@@ -125,7 +126,7 @@ def test_killpg_silenced_when_process_gone(tmp_path, monkeypatch, conn):
 
     mock_proc = mock.Mock()
     mock_proc.pid = 99999
-    mock_proc.returncode = None  # timeout path
+    mock_proc.returncode = -9  # SIGKILL
     mock_proc.communicate.side_effect = [
         subprocess.TimeoutExpired(cmd="papermill", timeout=0.25, output=b"", stderr=b""),
         (b"", b""),
@@ -209,7 +210,7 @@ def test_timeout_keys(cfg_root_run, monkeypatch):
 
     mock_proc = mock.Mock()
     mock_proc.pid = 77777
-    mock_proc.returncode = None  # timeout path
+    mock_proc.returncode = -9  # SIGKILL
     mock_proc.communicate.side_effect = [
         subprocess.TimeoutExpired(cmd="papermill", timeout=0.25, output=b"", stderr=b""),
         (b"", b""),  # drain after kill

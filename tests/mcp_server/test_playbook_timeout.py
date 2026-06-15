@@ -71,7 +71,7 @@ def test_playbook_run_timeout_returns_structured_error_promptly(cfg_root_run, mo
 
     mock_proc = mock.Mock()
     mock_proc.pid = 99999
-    mock_proc.returncode = None  # timeout path: exit_code stays None
+    mock_proc.returncode = -9  # SIGKILL
     mock_proc.communicate.side_effect = [
         subprocess.TimeoutExpired(cmd="papermill", timeout=0.25, output=b"partial stdout", stderr=b"partial stderr"),
         (b"partial stdout", b"partial stderr"),  # drain after kill
@@ -107,7 +107,7 @@ def test_playbook_run_marimo_timeout_returns_structured_error(tmp_path, monkeypa
 
     mock_proc = mock.Mock()
     mock_proc.pid = 99998
-    mock_proc.returncode = None
+    mock_proc.returncode = -9  # SIGKILL
     mock_proc.communicate.side_effect = [
         subprocess.TimeoutExpired(cmd="marimo", timeout=0.1, output=b"marimo stdout", stderr=b"marimo stderr"),
         (b"marimo stdout", b"marimo stderr"),  # drain after kill
@@ -141,7 +141,7 @@ def test_playbook_run_null_marimo_timeout_falls_back_to_default(tmp_path, monkey
 
     mock_proc = mock.Mock()
     mock_proc.pid = 99997
-    mock_proc.returncode = None
+    mock_proc.returncode = -9  # SIGKILL
     mock_proc.communicate.side_effect = [
         subprocess.TimeoutExpired(cmd="marimo", timeout=DEFAULT_PLAYBOOK_TIMEOUT_SECONDS, output=b"fallback stdout", stderr=b"fallback stderr"),
         (b"fallback stdout", b"fallback stderr"),  # drain after kill
