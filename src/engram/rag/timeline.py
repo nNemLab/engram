@@ -18,9 +18,12 @@ only by the optional ``since``/``until`` time window).
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass
 from typing import Any
+
+logger = logging.getLogger("engram.rag.timeline")
 
 # The lifecycle event types that make up an episodic timeline. Other event
 # types (retrieved, cited, merged, goal_*, ...) are operational noise here.
@@ -104,7 +107,11 @@ def reconstruct_timeline(
 
     out: list[TimelineEntry] = []
     for r in rows:
-        payload = json.loads(r["payload"])
+        try:
+            payload = json.loads(r["payload"])
+        except (json.JSONDecodeError, TypeError) as exc:
+            logger.warning("Skipping event id=%s: corrupt payload (%s)", r["id"], exc)
+            continue
         if scope is not None and not (_payload_hashes(payload) & scope):
             continue
         out.append(TimelineEntry(id=r["id"], ts=r["ts"], event=r["type"], payload=payload))

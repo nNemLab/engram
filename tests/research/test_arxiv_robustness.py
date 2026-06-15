@@ -45,6 +45,31 @@ def test_search_skips_bad_result_entries(monkeypatch):
     assert results[0].arxiv_id == "1234.5678"
 
 
+def test_search_does_not_quote_field_prefixed_query(monkeypatch):
+    captured: dict[str, str] = {}
+
+    class FakeClient:
+        def results(self, _query):
+            return iter([])
+
+    class FakeSearch:
+        def __init__(self, **kwargs):
+            captured["query"] = kwargs["query"]
+
+    class FakeArxiv:
+        Client = lambda self, **kwargs: FakeClient()  # noqa: E731
+        Search = FakeSearch
+
+        class SortCriterion:
+            Relevance = object()
+
+    monkeypatch.setitem(sys.modules, "arxiv", FakeArxiv())
+
+    arxiv.search("ti:graph neural networks", k=5, do_rerank=False, quote_phrase=True)
+
+    assert captured["query"] == "ti:graph neural networks"
+
+
 def test_search_wraps_top_level_arxiv_iteration_error(monkeypatch):
     class FakeClient:
         def results(self, _query):

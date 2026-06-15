@@ -16,6 +16,37 @@ async def test_searxng_query_malformed_json_returns_empty_results():
     assert results == []
 
 
+async def test_search_async_dedups_urls_before_fetch(monkeypatch):
+    raw = [
+        {"url": "https://example.com/a", "title": "a-1", "content": "c1"},
+        {"url": "https://example.com/a", "title": "a-2", "content": "c2"},
+        {"url": "https://example.com/b", "title": "b", "content": "c3"},
+    ]
+    fetched_urls: list[str] = []
+
+    async def fake_searxng_query(client, base_url, q, max_candidates):
+        return raw
+
+    async def fake_fetch_one(client, url):
+        fetched_urls.append(url)
+        return f"body:{url}"
+
+    monkeypatch.setattr(web, "_searxng_query", fake_searxng_query)
+    monkeypatch.setattr(web, "_fetch_one", fake_fetch_one)
+    monkeypatch.setattr(web, "_extract", lambda html: html)
+    monkeypatch.setattr(web.rerank, "score", lambda query, passages: [1.0] * len(passages))
+    monkeypatch.setattr(
+        web,
+        "load_config",
+        lambda: SimpleNamespace(research=SimpleNamespace(searxng_url="https://searx.local")),
+    )
+
+    hits = await web._search_async("query", k=8, max_candidates=20)
+
+    assert len(hits) == 2
+    assert fetched_urls == ["https://example.com/a", "https://example.com/b"]
+
+
 async def test_search_async_bounds_fetch_fanout(monkeypatch):
     raw = [{"url": f"https://example.com/{i}", "title": f"t{i}", "content": f"c{i}"} for i in range(20)]
 

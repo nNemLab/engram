@@ -33,6 +33,6 @@ def score(query: str, passages: Sequence[str]) -> list[float]:
     if not passages:
         return []
     model = _get_model()
-    pairs = [(query, p[:2000]) for p in passages]   # truncate to model context
+    pairs = [(query, p) for p in passages]
     raw = model.predict(pairs, show_progress_bar=False)
     return [float(x) for x in raw]

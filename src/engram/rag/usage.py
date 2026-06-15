@@ -3,11 +3,14 @@ ranking factor. content_usage is a cache; the event log is canonical (rebuildabl
 from __future__ import annotations
 
 import json
+import logging
 import math
 import sqlite3
 
 from .. import log as event_log
 from ..common.time import utcnow_iso
+
+logger = logging.getLogger("engram.rag.usage")
 
 
 def record_cited(conn: sqlite3.Connection, hashes: list[str], *, query: str = "",
@@ -54,10 +57,14 @@ def rebuild_usage(conn: sqlite3.Connection) -> None:
     """Recompute content_usage from the canonical `cited` event log."""
     conn.execute("DELETE FROM content_usage")
     rows = conn.execute(
-        "SELECT payload, ts FROM events WHERE type='cited' ORDER BY id"
+        "SELECT id, payload, ts FROM events WHERE type='cited' ORDER BY id"
     ).fetchall()
     for r in rows:
-        payload = json.loads(r["payload"])
+        try:
+            payload = json.loads(r["payload"])
+        except (json.JSONDecodeError, TypeError) as exc:
+            logger.warning("Skipping event id=%s: corrupt payload (%s)", r["id"], exc)
+            continue
         # Support both old single-hash payloads and current multi-hash payloads
         hashes: list[str] = payload.get("hashes") or []
         if not hashes:
