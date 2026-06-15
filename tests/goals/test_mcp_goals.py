@@ -52,11 +52,11 @@ def test_resolve_on_existing_goal_succeeds(conn):
 
 
 def test_resolve_on_missing_goal_returns_not_found(conn):
-    """Regression for #90: resolving a non-existent goal must not return
-    fake success — it must return {"error": "not found", "id": ...}.
+    """Regression for #90: resolving a non-existent goal must return
+    a structured not-found error (not just presence of the key).
     """
     from engram.mcp_server.tools.goals import register
     tools = register(conn)
     out = tools["goals.resolve"]["handler"]({"id": "ghost-goal"})
-    assert "error" in out
+    assert out["error"] == "not found"
     assert out["id"] == "ghost-goal"

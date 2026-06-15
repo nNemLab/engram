@@ -158,23 +158,24 @@ def test_fetch_now_clears_next_poll_at(conn):
 
 def test_set_on_missing_id_returns_not_found(conn):
     """Regression for #90: sources.set on a non-existent id must not crash
-    or return fake success — it must return {"error": "not found"}.
+    or return fake success — it must return a structured not-found error.
     """
     from engram.mcp_server.tools.sources import register
     tools = register(conn)
     out = tools["sources.set"]["handler"]({"id": "ghost", "paused": True})
-    assert "error" in out
+    assert out["error"] == "not found"
     assert out["id"] == "ghost"
 
 
 def test_set_config_merge_on_missing_id_returns_not_found(conn):
     """Regression for #90: sources.set with config on a non-existent id
-    must check fetchone() before indexing (no TypeError), and return not_found.
+    must check fetchone() before indexing (no TypeError), and return
+    an explicit not-found error.
     """
     from engram.mcp_server.tools.sources import register
     tools = register(conn)
     out = tools["sources.set"]["handler"]({"id": "ghost", "config": {"k": "v"}})
-    assert "error" in out
+    assert out["error"] == "not found"
     assert out["id"] == "ghost"
 
 
