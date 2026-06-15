@@ -116,35 +116,34 @@ def _handle_event(conn: sqlite3.Connection, vault: Path, evt: event_log.Event,
             if hash_new:
                 _project_one(conn, vault, hash_new, kind_dirs)
             return
-        if old_state and old_state["vault_path"]:
-            old_path = old_state["vault_path"]
-            new_row = conn.execute(
-                "SELECT * FROM content WHERE hash = ? AND tombstoned = 0",
-                (hash_new,),
-            ).fetchone()
-            if new_row:
-                renderer = RENDERERS.get(new_row["kind"], RENDERERS["kb"])
-                kind_dir = kind_dirs.get(new_row["kind"], kind_dirs.get("kb", "050-kb"))
-                _, body = renderer(new_row, kind_dir)
-                abs_path = vault / old_path
-                abs_path.parent.mkdir(parents=True, exist_ok=True)
-                now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-                # Same cross-process ordering as _project_one (#96): repoint and
-                # commit vault_state to the NEW revision's body before the file
-                # write, so the watcher never reads the OLD rendered_body against
-                # the NEW on-disk bytes and misclassifies it as a human edit.
-                conn.execute("DELETE FROM vault_state WHERE content_hash = ?", (hash_old,))
-                conn.execute(
-                    "INSERT INTO vault_state (vault_path, content_hash, rendered_body, rendered_at) "
-                    "VALUES (?, ?, ?, ?) "
-                    "ON CONFLICT(vault_path) DO UPDATE SET content_hash=excluded.content_hash, "
-                    "rendered_body=excluded.rendered_body, rendered_at=excluded.rendered_at",
-                    (old_path, hash_new, body, now),
-                )
-                conn.execute("UPDATE content SET vault_path = ? WHERE hash = ?",
-                             (old_path, hash_new))
-                conn.commit()
-                _atomic_write(abs_path, body)
+        old_path = old_state["vault_path"]
+        new_row = conn.execute(
+            "SELECT * FROM content WHERE hash = ? AND tombstoned = 0",
+            (hash_new,),
+        ).fetchone()
+        if new_row:
+            renderer = RENDERERS.get(new_row["kind"], RENDERERS["kb"])
+            kind_dir = kind_dirs.get(new_row["kind"], kind_dirs.get("kb", "050-kb"))
+            _, body = renderer(new_row, kind_dir)
+            abs_path = vault / old_path
+            abs_path.parent.mkdir(parents=True, exist_ok=True)
+            now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            # Same cross-process ordering as _project_one (#96): repoint and
+            # commit vault_state to the NEW revision's body before the file
+            # write, so the watcher never reads the OLD rendered_body against
+            # the NEW on-disk bytes and misclassifies it as a human edit.
+            conn.execute("DELETE FROM vault_state WHERE content_hash = ?", (hash_old,))
+            conn.execute(
+                "INSERT INTO vault_state (vault_path, content_hash, rendered_body, rendered_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(vault_path) DO UPDATE SET content_hash=excluded.content_hash, "
+                "rendered_body=excluded.rendered_body, rendered_at=excluded.rendered_at",
+                (old_path, hash_new, body, now),
+            )
+            conn.execute("UPDATE content SET vault_path = ? WHERE hash = ?",
+                         (old_path, hash_new))
+            conn.commit()
+            _atomic_write(abs_path, body)
 
 
 def run() -> None:
