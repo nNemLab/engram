@@ -22,17 +22,63 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
-      # release-please owns uv.lock's version line directly (see the uv.lock
-      # extra-files entry in release-please-config.json), so the lockfile stays
-      # in sync with the pyproject bump without a separate bot commit. That
-      # second commit used to be pushed with GITHUB_TOKEN, which suppresses CI
-      # (GitHub's recursion guard) and left the release PR's required check
-      # stalled forever. Only the editable root package's `version` changes at
-      # release time — dependency changes already land their own uv.lock delta
-      # in the feature PR — so a single-line bump matches what `uv lock` emits.
+      # release-please bumps the version in pyproject.toml / __init__.py /
+      # plugin.json, but it does NOT touch uv.lock, so the release PR ships a
+      # uv.lock whose `engram` self-version still pins the previous release.
+      # CI runs `uv run --locked`, which then fails on the release PR. We fix
+      # that in the sync step below by re-locking and pushing uv.lock back.
+      #
+      # The action runs with a fine-grained PAT (RELEASE_PLEASE_TOKEN), not the
+      # default GITHUB_TOKEN: GitHub suppresses workflow runs for commits/PRs
+      # authored by GITHUB_TOKEN (recursion guard), which would leave the
+      # release PR's required `lint + unit tests` check stalled forever. Authoring
+      # the release PR with the PAT lets CI trigger normally.
       - uses: googleapis/release-please-action@v4
         id: release
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # Re-lock uv.lock on the standing release PR so `uv run --locked` passes.
+      # Gated on `steps.release.outputs.pr` (a JSON string of the open release
+      # PR's PullRequest object, empty when there is none). We push to the
+      # release branch with the same PAT so the push re-triggers CI's
+      # `lint + unit tests` check (a GITHUB_TOKEN push would not).
+      #
+      # No push loop: this push targets the release branch, not main, so it does
+      # not re-trigger this workflow (it only runs on push to main). It does
+      # trigger CI via the PR's `synchronize` event — exactly what we want. And
+      # the push only happens when `uv lock` actually changes uv.lock, so once
+      # the lockfile is in sync the step is a clean no-op.
+      - name: Check out the release branch
+        if: ${{ steps.release.outputs.pr }}
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ fromJson(steps.release.outputs.pr).headBranchName }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+
+      - name: Install uv
+        if: ${{ steps.release.outputs.pr }}
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: '**/uv.lock'
+
+      - name: Pin Python 3.11
+        if: ${{ steps.release.outputs.pr }}
+        run: uv python install 3.11
+
+      - name: Sync uv.lock to the release version
+        if: ${{ steps.release.outputs.pr }}
+        run: |
+          uv lock
+          if git diff --quiet -- uv.lock; then
+            echo "uv.lock already in sync with the bumped version; nothing to push."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add uv.lock
+          git commit -m 'chore: sync uv.lock to release version'
+          git push
