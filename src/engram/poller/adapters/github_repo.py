@@ -24,12 +24,25 @@ def _next_page_url(link_header: str) -> str | None:
     ``None`` when there is no next page."""
     if not link_header:
         return None
+
     for segment in link_header.split(","):
-        segment = segment.strip()
-        if ' rel="next"' in segment:
-            url = segment.split(";")[0].strip()
-            if url:
-                return url.strip("<>")
+        parts = [part.strip() for part in segment.split(";")]
+        if not parts:
+            continue
+
+        url_part = parts[0]
+        rel: str | None = None
+        for param in parts[1:]:
+            if "=" not in param:
+                continue
+            key, value = param.split("=", 1)
+            if key.strip().lower() == "rel":
+                rel = value.strip().strip('"')
+                break
+
+        if rel == "next" and url_part:
+            return url_part.strip("<>")
+
     return None
 
 

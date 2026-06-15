@@ -154,6 +154,9 @@ def test_next_page_url_parses_link_header():
     link = '<https://api.github.com/repositories/1/items?page=2>; rel="next"'
     assert gh_adapter._next_page_url(link) == "https://api.github.com/repositories/1/items?page=2"
 
+    link_spaceless = '<https://api.github.com/repositories/1/items?page=2>;rel="next"'
+    assert gh_adapter._next_page_url(link_spaceless) == "https://api.github.com/repositories/1/items?page=2"
+
     assert gh_adapter._next_page_url("") is None
     assert gh_adapter._next_page_url(None) is None
 
