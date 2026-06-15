@@ -97,9 +97,9 @@ def test_vector_hits_returns_true_cosine():
 # Integration: grounding verdict on true cosine scale
 # ---------------------------------------------------------------------------
 
-def test_grounding_strong_now_reachable_for_70_degrees():
-    """Before the fix, vec0 distance=0.41 (~40°) → 1-d ≈ 0.59 which was below
-    tau_high=0.62 even though true cosine(40°)≈0.766 > 0.62.
+def test_grounding_strong_now_reachable_at_true_cosine():
+    """Before the fix, vec0 distance=0.41 → 1-d ≈ 0.59 which was below
+    tau_high=0.62 even though true cos(24°)≈0.916 > 0.62.
 
     With the fix, a vector at L2 distance 0.41 (cos ≈ 0.916) correctly triggers
     STRONG when margin is sufficient.
