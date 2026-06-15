@@ -1,5 +1,5 @@
-"""SSRF guard (issue #31): scheme pinning, non-public IP rejection,
-per-hop redirect re-validation."""
+"""SSRF guard: scheme pinning, non-public IP rejection, per-hop redirect
+re-validation (issue #31), and DNS-rebinding/TOCTOU connection pinning (#95)."""
 import socket
 
 import httpx
@@ -145,3 +145,121 @@ async def test_async_get_rejects_private_url_before_request():
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(UnsafeURLError):
             await safe_fetch.get_async(client, "http://[::1]:6379/")
+
+
+# --- DNS-rebinding / TOCTOU: the validated IP is pinned (issue #95) -----------
+
+def _flipping_resolver(first_ip, later_ip, calls):
+    """getaddrinfo stand-in modelling a rebinding server: the first lookup
+    answers `first_ip`, every later lookup answers `later_ip`."""
+    def fake_getaddrinfo(host, port, *a, **kw):
+        ip = first_ip if not calls else later_ip
+        calls.append(ip)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port or 80))]
+    return fake_getaddrinfo
+
+
+def test_sync_get_pins_validated_ip_to_connection(monkeypatch):
+    """A hostname is resolved once; the connection is pinned to that validated
+    IP. Even though a second lookup would rebind to loopback, the request must
+    target the validated public IP (not the hostname) and resolve only once."""
+    calls = []
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        _flipping_resolver(PUBLIC, "127.0.0.1", calls))
+    seen = {}
+
+    def handler(request):
+        seen["host"] = request.url.host
+        seen["host_header"] = request.headers.get("host")
+        return httpx.Response(200, text="ok")
+
+    r = safe_fetch.get("http://rebind.example/page",
+                       transport=httpx.MockTransport(handler))
+    assert r.status_code == 200
+    assert calls == [PUBLIC]               # resolved exactly once — no re-resolve
+    assert seen["host"] == PUBLIC          # connection pinned to the validated IP
+    assert seen["host_header"] == "rebind.example"  # original Host preserved
+
+
+async def test_async_get_pins_validated_ip_to_connection(monkeypatch):
+    calls = []
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        _flipping_resolver(PUBLIC, "127.0.0.1", calls))
+    seen = {}
+
+    def handler(request):
+        seen["host"] = request.url.host
+        seen["host_header"] = request.headers.get("host")
+        return httpx.Response(200, text="ok")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        r = await safe_fetch.get_async(client, "http://rebind.example/page")
+    assert r.status_code == 200
+    assert calls == [PUBLIC]
+    assert seen["host"] == PUBLIC
+    assert seen["host_header"] == "rebind.example"
+
+
+def test_sync_get_refuses_host_resolving_to_private(monkeypatch):
+    """A hostname whose (single) resolution is private is refused, no send."""
+    def fake_getaddrinfo(host, port, *a, **kw):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port or 80))]
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    def handler(request):
+        raise AssertionError("must not send to a host that resolves to loopback")
+
+    with pytest.raises(UnsafeURLError):
+        safe_fetch.get("http://rebind.example/", transport=httpx.MockTransport(handler))
+
+
+def test_sync_get_blocks_redirect_to_private_hostname(monkeypatch):
+    """A redirect to a *hostname* that resolves to a private IP is rejected,
+    proving every hop is re-resolved and re-validated."""
+    def fake_getaddrinfo(host, port, *a, **kw):
+        ip = PUBLIC if host == "good.example" else "10.0.0.5"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port or 80))]
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    def handler(request):
+        if request.headers.get("host") == "good.example":
+            return httpx.Response(302, headers={"location": "http://evil.example/x"})
+        raise AssertionError("must not follow redirect to a private hostname")
+
+    with pytest.raises(UnsafeURLError):
+        safe_fetch.get("http://good.example/", transport=httpx.MockTransport(handler))
+
+
+async def test_async_get_blocks_redirect_to_private_hostname(monkeypatch):
+    def fake_getaddrinfo(host, port, *a, **kw):
+        ip = PUBLIC if host == "good.example" else "10.0.0.5"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port or 80))]
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    def handler(request):
+        if request.headers.get("host") == "good.example":
+            return httpx.Response(302, headers={"location": "http://evil.example/x"})
+        raise AssertionError("must not follow redirect to a private hostname")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(UnsafeURLError):
+            await safe_fetch.get_async(client, "http://good.example/")
+
+
+def test_sync_get_follows_public_hostname_redirect(monkeypatch):
+    """Hostname → hostname redirect, both public, still works end to end with
+    each hop pinned to its validated IP."""
+    def fake_getaddrinfo(host, port, *a, **kw):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (PUBLIC, port or 80))]
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    def handler(request):
+        if request.headers.get("host") == "start.example":
+            return httpx.Response(301, headers={"location": "http://end.example/done"})
+        assert request.headers.get("host") == "end.example"
+        assert request.url.host == PUBLIC
+        return httpx.Response(200, text="ok")
+
+    r = safe_fetch.get("http://start.example/", transport=httpx.MockTransport(handler))
+    assert r.status_code == 200
+    assert r.text == "ok"
