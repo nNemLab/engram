@@ -88,8 +88,17 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "inputs.json").write_text(json.dumps(params, indent=2))
 
-        runtime_cfg = cfg.playbooks.jupyter if runtime == "jupyter" else cfg.playbooks.marimo
-        timeout_seconds = float(args.get("timeout_seconds", runtime_cfg.get("timeout_seconds", DEFAULT_PLAYBOOK_TIMEOUT_SECONDS)))
+        runtime_cfg = (cfg.playbooks.jupyter if runtime == "jupyter" else cfg.playbooks.marimo) or {}
+        raw_timeout = args.get("timeout_seconds")
+        if raw_timeout is None:
+            raw_timeout = runtime_cfg.get("timeout_seconds")
+        if raw_timeout is None:
+            timeout_seconds = DEFAULT_PLAYBOOK_TIMEOUT_SECONDS
+        else:
+            try:
+                timeout_seconds = float(raw_timeout)
+            except (TypeError, ValueError):
+                timeout_seconds = DEFAULT_PLAYBOOK_TIMEOUT_SECONDS
         if timeout_seconds <= 0:
             return {"error": f"timeout_seconds must be > 0 (got {timeout_seconds})"}
 

@@ -13,8 +13,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 
 
-@pytest.fixture
-def cfg_root(tmp_path, monkeypatch):
+def _make_run_handler(tmp_path, monkeypatch, conn, *, playbooks_cfg):
     root = tmp_path / "engram"
     for sub in ("playbooks/scratch", "playbooks/curated", "playbooks/runs", "vault"):
         (root / sub).mkdir(parents=True)
@@ -30,15 +29,30 @@ def cfg_root(tmp_path, monkeypatch):
                     "playbooks_runs": str(root / "playbooks/runs"),
                     "db": str(root / "db.sqlite"),
                 },
-                "playbooks": {"jupyter": {"timeout_seconds": 0.25}},
+                "playbooks": playbooks_cfg,
             }
         )
     )
     monkeypatch.setenv("ENGRAM_CONFIG", str(cfg))
     from engram.common.config import load_config
+    from engram.mcp_server.tools.playbook import register
 
     load_config.cache_clear()
-    yield root
+    run = register(conn)["playbook.run"]["handler"]
+    return root, run
+
+
+@pytest.fixture
+def cfg_root_run(tmp_path, monkeypatch, conn):
+    root, run = _make_run_handler(
+        tmp_path,
+        monkeypatch,
+        conn,
+        playbooks_cfg={"jupyter": {"timeout_seconds": 0.25}},
+    )
+    yield root, run
+    from engram.common.config import load_config
+
     load_config.cache_clear()
 
 
@@ -50,14 +64,8 @@ def conn():
     return c
 
 
-@pytest.fixture
-def run(cfg_root, conn):
-    from engram.mcp_server.tools.playbook import register
-
-    return register(conn)["playbook.run"]["handler"]
-
-
-def test_playbook_run_timeout_returns_structured_error_promptly(cfg_root, run, monkeypatch):
+def test_playbook_run_timeout_returns_structured_error_promptly(cfg_root_run, monkeypatch):
+    cfg_root, run = cfg_root_run
     (cfg_root / "playbooks/scratch/demo.ipynb").write_text("{}")
 
     def fake_run(cmd, **kwargs):
@@ -82,3 +90,63 @@ def test_playbook_run_timeout_returns_structured_error_promptly(cfg_root, run, m
     assert "timed out" in out["error"]
     assert out["stdout_tail"] == "partial stdout"
     assert out["stderr_tail"] == "partial stderr"
+
+
+def test_playbook_run_marimo_timeout_returns_structured_error(tmp_path, monkeypatch, conn):
+    cfg_root, run = _make_run_handler(
+        tmp_path,
+        monkeypatch,
+        conn,
+        playbooks_cfg={"marimo": {"timeout_seconds": 0.1}},
+    )
+    (cfg_root / "playbooks/curated/demo.py").write_text("print('hi')")
+
+    def fake_run(cmd, **kwargs):
+        assert kwargs["timeout"] == pytest.approx(0.1)
+        raise subprocess.TimeoutExpired(
+            cmd=cmd,
+            timeout=kwargs["timeout"],
+            output="marimo stdout",
+            stderr="marimo stderr",
+        )
+
+    monkeypatch.setattr("engram.mcp_server.tools.playbook.subprocess.run", fake_run)
+
+    out = run({"name": "demo", "runtime": "marimo"})
+
+    assert out["timeout"] is True
+    assert out["timeout_seconds"] == pytest.approx(0.1)
+    assert out["exit_code"] is None
+    assert "timed out" in out["error"]
+    assert out["stdout_tail"] == "marimo stdout"
+    assert out["stderr_tail"] == "marimo stderr"
+
+
+def test_playbook_run_null_marimo_timeout_falls_back_to_default(tmp_path, monkeypatch, conn):
+    cfg_root, run = _make_run_handler(
+        tmp_path,
+        monkeypatch,
+        conn,
+        playbooks_cfg={"marimo": None},
+    )
+    (cfg_root / "playbooks/curated/demo.py").write_text("print('hi')")
+
+    def fake_run(cmd, **kwargs):
+        from engram.mcp_server.tools.playbook import DEFAULT_PLAYBOOK_TIMEOUT_SECONDS
+
+        assert kwargs["timeout"] == pytest.approx(DEFAULT_PLAYBOOK_TIMEOUT_SECONDS)
+        raise subprocess.TimeoutExpired(
+            cmd=cmd,
+            timeout=kwargs["timeout"],
+            output="fallback stdout",
+            stderr="fallback stderr",
+        )
+
+    monkeypatch.setattr("engram.mcp_server.tools.playbook.subprocess.run", fake_run)
+
+    out = run({"name": "demo", "runtime": "marimo"})
+
+    assert out["timeout"] is True
+    assert out["exit_code"] is None
+    assert out["timeout_seconds"] == pytest.approx(300.0)
+    assert "timed out" in out["error"]
