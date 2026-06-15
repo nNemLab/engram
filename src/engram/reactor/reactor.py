@@ -52,9 +52,12 @@ def run() -> None:
                 if handler:
                     try:
                         handler(conn, evt)
+                        last = evt.id  # advance cursor only after successful dispatch
                     except Exception:
                         logger.exception("handler %s failed for event %d", evt.type, evt.id)
-                last = evt.id
+                        break  # stop batch on failure; cursor stays at last successful event
+                else:
+                    last = evt.id  # no handler → still safe to advance
             if last != cursor:
                 _write_cursor(conn, last)
                 cursor = last
