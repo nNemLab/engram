@@ -32,7 +32,9 @@ class Hit:
 def _vector_hits(conn: sqlite3.Connection, query_emb: bytes, k: int) -> list[tuple[str, float]]:
     rows = conn.execute(
         "SELECT content_hash, distance FROM embeddings "
-        "WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
+        "WHERE embedding MATCH ? "
+        "AND content_hash IN (SELECT hash FROM content WHERE tombstoned = 0) "
+        "ORDER BY distance LIMIT ?",
         (query_emb, k),
     ).fetchall()
     return [(r["content_hash"], l2_to_cosine(float(r["distance"]))) for r in rows]

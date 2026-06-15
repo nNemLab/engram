@@ -112,9 +112,21 @@ def test_keep_mine_can_purge_upstream_revision(conn):
     from engram.dedup import resolve_supersede
 
     h_human, h_up = _blocked_state(conn)
+    # Simulate existing embedding row for the upstream revision.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS embeddings (content_hash TEXT PRIMARY KEY, embedding BLOB)"
+    )
+    conn.execute(
+        "INSERT INTO embeddings (content_hash, embedding) VALUES (?, ?)",
+        (h_up, b"dummy"),
+    )
+
     resolve_supersede(conn, h_human, "keep_mine", tombstone_upstream=True, actor="human")
     up = conn.execute("SELECT tombstoned FROM content WHERE hash = ?", (h_up,)).fetchone()
     assert up["tombstoned"] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM embeddings WHERE content_hash = ?", (h_up,)
+    ).fetchone()[0] == 0
 
 
 def test_keep_mine_default_is_durable_on_repoll(conn):
