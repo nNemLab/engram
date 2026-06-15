@@ -19,6 +19,20 @@ logger = logging.getLogger("engram.poller.github_repo")
 
 _REPO_RE = re.compile(r"https?://github\.com/([^/]+)/([^/]+?)/?(?:$|\.git$)")
 
+def _next_page_url(link_header: str) -> str | None:
+    """Parse a GitHub ``Link`` header and return the URL for ``rel=next``, or
+    ``None`` when there is no next page."""
+    if not link_header:
+        return None
+    for segment in link_header.split(","):
+        segment = segment.strip()
+        if ' rel="next"' in segment:
+            url = segment.split(";")[0].strip()
+            if url:
+                return url.strip("<>")
+    return None
+
+
 _AUTH_SOURCE_LABEL = {
     "env": "GITHUB_TOKEN env var",
     "gh": "gh CLI keyring",
@@ -139,20 +153,73 @@ class GitHubRepoAdapter:
         source["cursor"] = json.dumps({"last_sha": head_sha})
 
     async def _tree_paths(self, owner: str, repo: str, sha: str) -> list[str]:
-        r = await self._client.get(f"/repos/{owner}/{repo}/git/trees/{sha}",
-                                    params={"recursive": "1"})
-        r.raise_for_status()
-        data = r.json()
-        return [t["path"] for t in data.get("tree", []) if t.get("type") == "blob"]
+        """Walk the repository tree recursively, paginating each directory level
+        to avoid the ~1 000-entry truncation limit that the ``recursive=1``
+        endpoint imposes.
+
+        Returns only blob paths (not dirs, symlinks, or submodules).
+        """
+        queue: list[tuple[str, str]] = [(sha, "")]   # (tree_sha, prefix)
+        seen_shas: set[str] = set()                   # avoid revisiting dirs
+        all_blobs: list[str] = []
+
+        while queue:
+            tree_sha, prefix = queue.pop()
+
+            # Paginate through ALL entries at this tree level (GitHub caps
+            # each page at ~1 000 dirs/entries).
+            paginate_at: str | None = None  # track pagination loop
+            while True:
+                r = await self._client.get(
+                    f"/repos/{owner}/{repo}/git/trees/{tree_sha}",
+                )
+                r.raise_for_status()
+                data = r.json()
+
+                for entry in data.get("tree", []):
+                    if entry["type"] == "blob":
+                        child_path = (
+                            f"{prefix}/{entry['path']}" if prefix else entry["path"]
+                        )
+                        all_blobs.append(child_path)
+                    elif entry["type"] == "tree":
+                        child_path = (
+                            f"{prefix}/{entry['path']}" if prefix else entry["path"]
+                        )
+                        if entry["sha"] not in seen_shas:
+                            seen_shas.add(entry["sha"])
+                            queue.append((entry["sha"], child_path))
+
+                if not data.get("truncated"):
+                    break  # no more pages at this level
+
+                # Paginate within this level: GitHub uses the last entry's
+                # sha as the starting point for the next page.
+                next_sha = data["tree"][-1]["sha"]
+                if next_sha == paginate_at:
+                    break  # already paginated here — avoid infinite loop
+                paginate_at = next_sha
+                tree_sha = next_sha
+
+        return all_blobs
 
     async def _changed_paths(self, owner: str, repo: str, base: str, head: str) -> list[str]:
-        r = await self._client.get(f"/repos/{owner}/{repo}/compare/{base}...{head}")
-        r.raise_for_status()
-        data = r.json()
-        return [
-            f["filename"] for f in data.get("files", [])
-            if f.get("status") in ("added", "modified", "renamed")
-        ]
+        """Drain ALL pages of the compare API (follows ``Link`` headers).
+        The GitHub compare API caps each response at 3 000 files; the pagination
+        Link header tells us where to fetch next.  We follow it until exhausted
+        so no changed files are silently skipped before the cursor advances."""
+        all_files: list[str] = []
+        url = f"/repos/{owner}/{repo}/compare/{base}...{head}"
+        while url:
+            r = await self._client.get(url)
+            r.raise_for_status()
+            data = r.json()
+            all_files.extend(
+                f["filename"] for f in data.get("files", [])
+                if f.get("status") in ("added", "modified", "renamed")
+            )
+            url = _next_page_url(r.headers.get("link", ""))
+        return all_files
 
     async def _fetch_file(self, owner: str, repo: str, sha: str, path: str) -> str | None:
         r = await self._client.get(
