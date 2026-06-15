@@ -37,6 +37,10 @@ class Event:
     payload: dict[str, Any]
     actor: str | None
     correlation_id: str | None
+    # True when the stored payload could not be JSON-decoded (#84). Consumers
+    # must skip/dead-letter such rows rather than process an empty payload, but
+    # they still carry the row id so the cursor can advance past the bad row.
+    poison: bool = False
 
 
 def _has_hash_chain(conn: sqlite3.Connection) -> bool:
@@ -148,7 +152,22 @@ def since(conn: sqlite3.Connection, last_id: int, types: list[str] | None = None
             (last_id, limit),
         )
     for r in rows:
-        yield _row_to_event(r)
+        try:
+            yield _row_to_event(r)
+        except json.JSONDecodeError:
+            # Poison row: surface it as a flagged Event (carrying the id) instead
+            # of raising, so a single corrupt payload can't abort the whole
+            # iteration and freeze a daemon's cursor (#84). Narrowly scoped to
+            # JSON decode failures so genuine bugs still propagate.
+            yield Event(
+                id=r["id"],
+                ts=r["ts"],
+                type=r["type"],
+                payload={},
+                actor=r["actor"],
+                correlation_id=r["correlation_id"],
+                poison=True,
+            )
 
 
 def latest_id(conn: sqlite3.Connection) -> int:

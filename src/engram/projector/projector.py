@@ -134,6 +134,16 @@ def run() -> None:
         try:
             last_seen = cursor
             for evt in event_log.since(conn, cursor, types=["ingested", "merged", "superseded"]):
+                if evt.poison:
+                    # Dead-letter an un-parseable payload and advance past it so
+                    # one corrupt row can't freeze the loop and drop every later
+                    # event (#84).
+                    logger.warning(
+                        "projector skipping poison event id=%d (unparseable payload)",
+                        evt.id,
+                    )
+                    last_seen = evt.id
+                    continue
                 _handle_event(conn, vault, evt, cfg.projector.kind_dirs)
                 last_seen = evt.id
             if last_seen != cursor:
