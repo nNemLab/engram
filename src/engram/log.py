@@ -37,6 +37,10 @@ class Event:
     payload: dict[str, Any]
     actor: str | None
     correlation_id: str | None
+    # True when the stored payload could not be JSON-decoded (#84). Consumers
+    # must skip/dead-letter such rows rather than process an empty payload, but
+    # they still carry the row id so the cursor can advance past the bad row.
+    poison: bool = False
 
 
 def _has_hash_chain(conn: sqlite3.Connection) -> bool:
@@ -135,7 +139,16 @@ def _row_to_event(row: sqlite3.Row) -> Event:
 
 
 def since(conn: sqlite3.Connection, last_id: int, types: list[str] | None = None,
-          limit: int = 1000) -> Iterator[Event]:
+          limit: int = 1000, *, yield_poison: bool = False) -> Iterator[Event]:
+    """Yield typed events with id > last_id, oldest first.
+
+    By default a row whose payload is not valid JSON raises ``json.JSONDecodeError``
+    (the historical behavior every consumer relies on). Pass ``yield_poison=True``
+    to instead surface such a row as a flagged ``Event(payload={}, poison=True)``
+    carrying its id, so an opting-in caller can dead-letter it and advance past it
+    rather than crash (#84). This is opt-in so shared consumers that do not check
+    ``Event.poison`` keep their exact existing semantics.
+    """
     if types:
         q_marks = ",".join("?" * len(types))
         rows = conn.execute(
@@ -148,7 +161,27 @@ def since(conn: sqlite3.Connection, last_id: int, types: list[str] | None = None
             (last_id, limit),
         )
     for r in rows:
-        yield _row_to_event(r)
+        if not yield_poison:
+            # Default path: unchanged for every existing consumer — a corrupt
+            # payload propagates as json.JSONDecodeError exactly as before.
+            yield _row_to_event(r)
+            continue
+        try:
+            yield _row_to_event(r)
+        except json.JSONDecodeError:
+            # Opt-in poison handling: surface the row as a flagged Event (carrying
+            # the id) instead of raising, so a single corrupt payload can't abort
+            # the whole iteration and freeze a daemon's cursor (#84). Narrowly
+            # scoped to JSON decode failures so genuine bugs still propagate.
+            yield Event(
+                id=r["id"],
+                ts=r["ts"],
+                type=r["type"],
+                payload={},
+                actor=r["actor"],
+                correlation_id=r["correlation_id"],
+                poison=True,
+            )
 
 
 def latest_id(conn: sqlite3.Connection) -> int:
