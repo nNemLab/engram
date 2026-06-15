@@ -179,6 +179,44 @@ def test_find_near_ignores_tombstoned_rows_real_vec(tmp_path):
     assert near[0] == "live"
 
 
+def test_find_near_ignores_non_current_rows_real_vec(tmp_path):
+    """A superseded (is_current=0, not tombstoned) row must never be the near-dup
+    nearest neighbor, even when it is the closest vector (#139)."""
+    from engram.dedup import find_near
+
+    conn = sqlite3.connect(tmp_path / "t.sqlite")
+    conn.row_factory = sqlite3.Row
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
+    init_schema(conn, embed_dim=4)
+
+    # `old` is superseded (is_current=0) but NOT tombstoned, with the embedding
+    # still present; `live` is the current revision.
+    conn.execute(
+        "INSERT INTO content (hash, body, title, tombstoned, is_current) VALUES (?, ?, ?, ?, ?)",
+        ("old", "old body", "Old", 0, 0),
+    )
+    conn.execute(
+        "INSERT INTO content (hash, body, title, tombstoned, is_current) VALUES (?, ?, ?, ?, ?)",
+        ("live", "live body", "Live", 0, 1),
+    )
+
+    # `old` is the exact query vector (distance 0); `live` sits at ~10deg (cosine
+    # ~0.985, still above the 0.92 threshold). Pre-fix, find_near returns the
+    # nearer `old`; post-fix it must skip it and return `live`.
+    cos10 = math.cos(math.radians(10))
+    sin10 = math.sin(math.radians(10))
+    q_vec = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
+    live_vec = struct.pack("4f", cos10, sin10, 0.0, 0.0)
+    conn.execute("INSERT INTO embeddings (content_hash, embedding) VALUES (?, ?)", ("old", q_vec))
+    conn.execute("INSERT INTO embeddings (content_hash, embedding) VALUES (?, ?)", ("live", live_vec))
+
+    near = find_near(conn, q_vec, 0.92)
+    assert near is not None
+    assert near[0] == "live"
+
+
 def test_near_dup_detects_at_correct_cosine_threshold():
     """Call the REAL dedup.find_near with a mocked DB row.
 
