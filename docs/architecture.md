@@ -4,15 +4,21 @@
 
 ## Principle
 
-The event log is canonical. Everything else — the Obsidian vault, the FTS5
-index, the `vec0` embeddings, the entity graph — is a **materialized view**. If
-any of those get corrupted, you replay the log from event 0 and rebuild them.
-The log is the only thing you have to back up.
+The event log is canonical for state changes — every ingest, merge, supersede,
+and human edit is an immutable, ordered row. Content bodies live in a separate
+deduplicated, SHA-256-addressed `content` store; the `events` log and the
+`content` store together are the durable state. Everything else — the Obsidian
+vault, the FTS5 index, the `vec0` embeddings, the entity graph — is a
+**materialized view** regenerated from the `content` table: the projector
+re-renders vault files, FTS5 is rebuilt by its content triggers, and `eos-reembed`
+rebuilds the vector index from content bodies. Back up the database (`eos-snapshot`
+captures every table consistently); the derived views never need separate backup.
 
 Two corollaries shape the whole design:
 
-- **The human and the agent are peers.** Both write through the same dedup gate;
-  both edit the same markdown. Neither has a privileged path.
+- **The human and the agent are peers.** The agent writes through the dedup gate;
+  the human's vault edits are applied directly and taken as authoritative. Both
+  act on the same content, and there is no hidden, agent-only store.
 - **Every state change is an auditable event.** Nothing mutates silently — an
   ingest, a merge, a supersede, a human edit, a goal change are all immutable
   rows you can read back in order.
@@ -22,7 +28,7 @@ Two corollaries shape the whole design:
 ```mermaid
 flowchart TD
     K["Claude Code · kernel"]
-    L[("Event Log — SQLite, append-only<br/>ingested · merged · superseded · retrieved · edit · source_polled")]
+    L[("Event Log — SQLite, append-only<br/>ingested · merged · superseded · retrieved · vault_edit · source_polled")]
     P["Projector<br/>log → vault"]
     R["RAG view<br/>vec0 + FTS5"]
     Rx["Reactor<br/>embed · staleness"]
@@ -51,18 +57,21 @@ flowchart TD
     class Po,A source
 ```
 
-Every content write goes through `dedup.gate()` and produces an `ingested`
-event. The reactor embeds and post-checks for near-dups. The projector renders
-content rows to the vault. The watcher tails the vault filesystem so manual
-edits in Obsidian become authoritative.
+Agent and source writes go through `dedup.gate()`, which classifies each
+candidate as `exact_dup`, `superseded`, `near_dup`, or `new`. The reactor embeds
+and post-checks for near-dups. The projector renders content rows to the vault.
+The watcher tails the vault filesystem so manual edits in Obsidian are applied
+directly and become authoritative.
 
 ## Components
 
 ### Event log (`schema/001_initial.sql`, `src/engram/log.py`)
 
 One append-only `events` table. Each daemon keeps a cursor in `daemon_cursors`
-and replays forward. Twelve event types are defined; replaying from event 0
-reconstructs the system. Full taxonomy: [event-log-schema.md](event-log-schema.md).
+and replays forward to drive its view. Sixteen event types are emitted (the
+`type` column is free-form text, not an enforced enum); the `content` store holds
+the authoritative bodies those views render and index. Full taxonomy:
+[event-log-schema.md](event-log-schema.md).
 
 ### Dedup gate (`src/engram/dedup.py`)
 
@@ -154,7 +163,7 @@ Add a handler by registering it in `handlers.HANDLERS`.
   sending queries to a third party.
 - **Cross-encoder reranker** (`ms-marco-MiniLM-L-6-v2`) re-orders SearXNG
   candidates before ingest.
-- **arXiv fetcher** (`src/engram/research/arxiv.py`) pulls abstracts and PDFs.
+- **arXiv fetcher** (`src/engram/research/arxiv.py`) returns titles, abstracts, and PDF links; it does not download or ingest PDF content.
 - **`research.ingest_url`** runs server-side (host fetch + extract + dedup);
   **`research.fetch_url`** stamps a body the caller already fetched.
 
@@ -232,8 +241,9 @@ ranker uses this so ranking stays correct without manual tuning.
 | Failure | Recovery |
 |---|---|
 | Vault file accidentally deleted | Projector renders it again on next ingest/merge tick (it's just a view). |
-| FTS5 / embeddings corrupted | Drop the tables; replay log from 0 (handlers re-embed and re-index). |
-| Watcher crashed during human edit | Edit becomes authoritative on watcher restart; no event recorded. Live with it, or replay vault → log via `scripts/reconcile_vault.py`. |
+| FTS5 index corrupted | Rebuild it from the `content` table (the index is a derived view, auto-maintained by triggers on content writes). |
+| Embeddings corrupted, or embedding model changed | Run `eos-reembed`, which re-embeds every live `content` body into a fresh `vec0` table. |
+| Watcher crashed during human edit | Edit becomes authoritative on watcher restart; no event recorded. Live with it, or run `scripts/reconcile_vault.py` to reconcile the vault back into the database (it records a `vault_edit` and updates the affected `content` / `vault_state` rows). |
 | Wrong merge | Manually clear `tombstoned`, emit a corrective event. The log preserves the bad merge for audit. |
 
 ## Repository layout
