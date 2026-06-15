@@ -55,8 +55,9 @@
   through your own SearXNG.
 - **Human-auditable.** The vault is plain markdown you can read, grep, diff, and
   correct by hand — and every change is an immutable, timestamped event.
-- **One write path.** Human and agent write through the same dedup gate. There
-  is no hidden agent-only memory; you can always see and override what was stored.
+- **No hidden memory.** Agent and source writes flow through one dedup gate, and
+  your own edits in the vault are taken as authoritative — there is no hidden
+  agent-only memory, and you can always see and override what was stored.
 
 ## How it works
 
@@ -107,7 +108,7 @@ become authoritative.
 | Subsystem | Role |
 |---|---|
 | **Event log** | Append-only SQLite; the immutable, timestamped record of every state change. |
-| **Dedup gate** | The single write path: `exact_dup` / `superseded` / `near_dup` / `new`. |
+| **Dedup gate** | The write path for agent and source content: `exact_dup` / `superseded` / `near_dup` / `new`. |
 | **RAG** | Hybrid `vec0` + FTS5 retrieval, RRF-fused, ranked by confidence × source-tier × recency. |
 | **MCP server** | One server (stdio or HTTP), seven tool namespaces (`kb`, `rag`, `research`, `playbook`, `goals`, `sources`, `session`). |
 | **Projector / Watcher** | Log → vault markdown, and vault edits → log. |
@@ -283,7 +284,8 @@ free of telemetry.
   rather than being deleted.
 - **Yours to correct.** The vault is plain markdown in Obsidian: human-readable,
   greppable, diffable, git-able. The watcher makes your hand edits authoritative,
-  and there is no hidden agent-only memory — one gate for human and agent alike.
+  and there is no hidden agent-only memory — everything the agent stores is
+  visible and overridable.
 
 ## Uninstall
 
