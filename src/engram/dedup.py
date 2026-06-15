@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 from . import log as event_log
 from .common.config import load_config
+from .rag._cosine import l2_to_cosine
 
 Outcome = Literal["new", "exact_dup", "near_dup", "contradicts", "superseded", "supersede_blocked"]
 
@@ -48,9 +49,8 @@ def find_exact(conn: sqlite3.Connection, h: str) -> str | None:
 
 
 def find_near(conn: sqlite3.Connection, embedding: bytes, threshold: float) -> tuple[str, float] | None:
-    """Return (hash, distance) of nearest neighbor if cosine similarity > threshold.
-    sqlite-vec returns L2 distance by default — convert to cosine via normalized vectors.
-    For simplicity we treat vec0 distance as cosine_distance assuming caller passed normalized embeddings.
+    """Return (hash, similarity) of nearest neighbor if cosine similarity > threshold.
+    sqlite-vec returns L2 distance by default — converted to cosine via normalised vectors.
     """
     cur = conn.execute(
         "SELECT content_hash, distance FROM embeddings "
@@ -60,7 +60,7 @@ def find_near(conn: sqlite3.Connection, embedding: bytes, threshold: float) -> t
     row = cur.fetchone()
     if not row:
         return None
-    similarity = 1.0 - float(row["distance"])
+    similarity = l2_to_cosine(float(row["distance"]))
     if similarity >= threshold:
         return row["content_hash"], similarity
     return None

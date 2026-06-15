@@ -8,6 +8,7 @@ from datetime import UTC
 
 from .. import log as event_log
 from ..common.config import load_config
+from ._cosine import l2_to_cosine
 from .embed import embed_one
 from .usage import usage_factor
 
@@ -34,7 +35,7 @@ def _vector_hits(conn: sqlite3.Connection, query_emb: bytes, k: int) -> list[tup
         "WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
         (query_emb, k),
     ).fetchall()
-    return [(r["content_hash"], 1.0 - float(r["distance"])) for r in rows]
+    return [(r["content_hash"], l2_to_cosine(float(r["distance"]))) for r in rows]
 
 
 def _fts_match_expr(query: str) -> str | None:
