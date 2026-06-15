@@ -1,7 +1,7 @@
 """Vault watcher: detect manual edits in Obsidian → emit vault_edit events.
 
 Strategy:
-  - Watch the vault tree with watchdog (cross-platform inotify).
+  - Watch the vault tree with watchdog (cross-platform; inotify on Linux).
   - On a debounced modify, look up vault_state.rendered_body for the path.
   - If on-disk body differs, record the edit as a first-class new content
     revision: insert a new current+protected row addressed by
