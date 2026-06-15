@@ -107,6 +107,8 @@ def register(conn: sqlite3.Connection) -> dict[str, dict]:
             cur = conn.execute(
                 "SELECT config FROM sources WHERE id = ?", (args["id"],)
             ).fetchone()
+            if cur is None:
+                return {"error": "not found", "id": args["id"]}
             existing_cfg = json.loads(cur[0]) if cur[0] else {}
             merged_cfg = {**existing_cfg, **args["config"]}
             fields.append("config = ?")
@@ -121,8 +123,12 @@ def register(conn: sqlite3.Connection) -> dict[str, dict]:
         fields.append("updated_at = ?")
         params.append(utcnow_iso("s"))
         params.append(args["id"])
-        conn.execute(f"UPDATE sources SET {', '.join(fields)} WHERE id = ?", params)
+        cur = conn.execute(
+            f"UPDATE sources SET {', '.join(fields)} WHERE id = ?", params
+        )
         conn.commit()
+        if cur.rowcount == 0:
+            return {"error": "not found", "id": args["id"]}
         return {"updated_fields": updated}
 
     def health(args: dict[str, Any]) -> dict[str, Any]:

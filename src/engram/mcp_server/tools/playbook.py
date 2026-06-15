@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -100,7 +101,16 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
             except (TypeError, ValueError):
                 timeout_seconds = DEFAULT_PLAYBOOK_TIMEOUT_SECONDS
         if timeout_seconds <= 0:
-            return {"error": f"timeout_seconds must be > 0 (got {timeout_seconds})"}
+            return {
+                "run_id": run_id,
+                "run_dir": str(run_dir),
+                "exit_code": None,
+                "stdout_tail": "",
+                "stderr_tail": "",
+                "timeout": False,
+                "timeout_seconds": timeout_seconds,
+                "error": f"timeout_seconds must be > 0 (got {timeout_seconds})",
+            }
 
         if runtime == "jupyter":
             output = run_dir / "notebook.ipynb"
@@ -114,28 +124,37 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
 
         timeout_hit = False
         error = None
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=run_dir,
+            env=_subprocess_env(cfg.paths.root),
+            start_new_session=True,
+        )
         try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                cwd=run_dir,
-                env=_subprocess_env(cfg.paths.root),
-                timeout=timeout_seconds,
-            )
-            stdout = proc.stdout
-            stderr = proc.stderr
-            exit_code = proc.returncode
-        except subprocess.TimeoutExpired as exc:
+            stdout_b, stderr_b = proc.communicate(timeout=timeout_seconds)
+            stdout_b = stdout_b or b""
+            stderr_b = stderr_b or b""
+        except subprocess.TimeoutExpired:
             timeout_hit = True
             error = f"playbook timed out after {timeout_seconds}s"
-            stdout = exc.stdout or exc.output or ""
-            stderr = exc.stderr or ""
-            if isinstance(stdout, bytes):
-                stdout = stdout.decode(errors="replace")
-            if isinstance(stderr, bytes):
-                stderr = stderr.decode(errors="replace")
-            exit_code = None
+            # Kill the entire process group so grandchildren (kernels, etc.)
+            # don't survive the timeout.
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except OSError:
+                pass  # process already exited or not in our session
+            # Drain remaining output and reap the process.
+            stdout_b, stderr_b = proc.communicate()
+            stdout_b = stdout_b or b""
+            stderr_b = stderr_b or b""
+
+        stdout = stdout_b.decode(errors="replace") if isinstance(stdout_b, bytes) else stdout_b
+        stderr = stderr_b.decode(errors="replace") if isinstance(stderr_b, bytes) else stderr_b
+        # SIGKILL → proc.returncode == -9; preserve the prior contract of
+        # exit_code=None so callers know "timed out, no exit code".
+        exit_code = None if timeout_hit else proc.returncode
 
         (run_dir / "stdout.log").write_text(stdout)
         (run_dir / "stderr.log").write_text(stderr)
