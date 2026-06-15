@@ -43,6 +43,21 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 
 
 def init_schema(conn: sqlite3.Connection, embed_dim: int = 384) -> None:
+    """Apply the base schema and vec0 embeddings table.
+
+    The embed_dim guard is authoritative in config.py (RagConfig.__post_init__),
+    but we repeat the sanity check here as defense-in-depth so that any
+    direct callers of init_schema also get caught early.
+    """
+    if not isinstance(embed_dim, int) or isinstance(embed_dim, bool):
+        raise ValueError(
+            f"embed_dim must be a positive integer, got {embed_dim!r} "
+            f"(type {type(embed_dim).__name__})."
+        )
+    if embed_dim <= 0 or embed_dim > 8192:
+        raise ValueError(
+            f"embed_dim must be between 1 and 8192, got {embed_dim}."
+        )
     sql = SCHEMA_PATH.read_text()
     conn.executescript(sql)
     conn.execute(

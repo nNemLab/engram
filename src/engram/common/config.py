@@ -34,6 +34,23 @@ class RagConfig:
     rrf_k: int = 60
     near_dup_threshold: float = 0.92
 
+    def __post_init__(self) -> None:
+        """Validate embed_dim before it reaches the vec0 DDL f-string."""
+        dim = self.embed_dim
+        if not isinstance(dim, int) or isinstance(dim, bool):
+            raise ValueError(
+                f"rag.embed_dim must be a positive integer, got {dim!r} "
+                f"(type {type(dim).__name__})."
+            )
+        if dim <= 0:
+            raise ValueError(
+                f"rag.embed_dim must be a positive integer, got {dim}."
+            )
+        if dim > 8192:
+            raise ValueError(
+                f"rag.embed_dim must be <= 8192, got {dim}."
+            )
+
 
 @dataclass
 class ConfidenceConfig:
