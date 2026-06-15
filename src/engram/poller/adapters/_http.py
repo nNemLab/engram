@@ -16,6 +16,12 @@ from email.utils import parsedate_to_datetime
 
 import httpx
 
+# Upper bound on how long we'll honor a server-supplied Retry-After. A hostile or
+# misconfigured endpoint can send `Retry-After: 86400` (a full day); without a cap
+# a single source would park its coroutine for that entire time. Mirrors the
+# min() cap on the bare-5xx backoff path in fetch_with_politeness.
+MAX_RETRY_AFTER_SECONDS = 300.0
+
 
 @dataclass
 class HTTPCacheEntry:
@@ -106,7 +112,7 @@ async def fetch_with_politeness(
     if resp.status_code in (429, 503) and resp.headers.get("retry-after") is not None:
         wait = _parse_retry_after(resp.headers["retry-after"])
         if wait is not None:
-            await asyncio.sleep(wait)
+            await asyncio.sleep(min(wait, MAX_RETRY_AFTER_SECONDS))
             resp = await _do_request()
             retried = True
 

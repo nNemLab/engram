@@ -20,6 +20,10 @@ logger = logging.getLogger("engram.poller")
 
 CIRCUIT_BREAK_THRESHOLD = 5
 
+# Max sources polled concurrently per tick. Bounds fan-out so a burst of due
+# sources can't open an unbounded number of simultaneous HTTP fetches.
+POLL_CONCURRENCY = 8
+
 
 def select_due(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
@@ -131,18 +135,47 @@ async def poll_one(conn: sqlite3.Connection, source: dict[str, Any]) -> dict[str
     return counts
 
 
+async def _poll_due(
+    conn: sqlite3.Connection,
+    sources: list[Any],
+    *,
+    concurrency: int = POLL_CONCURRENCY,
+) -> None:
+    """Poll due sources concurrently with a bounded fan-out.
+
+    Each source runs under a semaphore, so a slow or sleeping source occupies
+    only its own slot and cannot stall the others in the tick (the original
+    serial loop let one source block every later one).
+
+    Concurrency is safe against the shared single-connection discipline (#83 /
+    #112): poll_one touches the connection only in synchronous sections
+    (dedup.gate's transaction(), the state UPDATE, event_log.append) that never
+    span an await. On the poller's single event loop, coroutines interleave only
+    at the adapter-fetch await points where no transaction is open, so no two
+    coroutines ever drive an overlapping transaction and asyncio.gather adds no
+    threads. Each source also writes only its own row (WHERE id = ?), so
+    concurrent fetches cannot corrupt another source's cursor/state.
+    """
+    sem = asyncio.Semaphore(max(1, concurrency))
+
+    async def _run(src: Any) -> None:
+        async with sem:
+            try:
+                counts = await poll_one(conn, dict(src))
+                logger.info("polled %s: %s", src["id"], counts)
+            except Exception:
+                logger.exception("poll_one failed for %s", src["id"])
+
+    await asyncio.gather(*(_run(src) for src in sources))
+
+
 async def run() -> None:
     load_config()
     conn = get_connection()
     logger.info("poller starting")
     while True:
         try:
-            for src in select_due(conn):
-                try:
-                    counts = await poll_one(conn, dict(src))
-                    logger.info("polled %s: %s", src["id"], counts)
-                except Exception:
-                    logger.exception("poll_one failed for %s", src["id"])
+            await _poll_due(conn, select_due(conn))
         except Exception:
             logger.exception("poller tick failed")
         await asyncio.sleep(60)

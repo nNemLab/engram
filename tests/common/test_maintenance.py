@@ -404,6 +404,59 @@ def test_restore_uses_backup_dir(tmp_path):
     assert Path(result["previous_backup"]).exists()
 
 
+def test_restore_pre_restore_backup_names_are_collision_proof(tmp_path, monkeypatch):
+    live = tmp_path / "db.sqlite"
+    _make_db(live)
+    snap = tmp_path / "snap.sqlite"
+    maintenance.snapshot(live, snap)
+
+    # Force both restores to share the exact same timestamp component.
+    monkeypatch.setattr(
+        maintenance,
+        "utcnow_iso",
+        lambda precision="ms": "2026-06-14T12:34:56.789Z",
+    )
+
+    first = maintenance.restore(snap, live)
+    second = maintenance.restore(snap, live)
+
+    first_backup = Path(first["previous_backup"])
+    second_backup = Path(second["previous_backup"])
+    assert first_backup.exists()
+    assert second_backup.exists()
+    assert first_backup != second_backup
+
+
+def test_restore_refuses_when_live_db_is_in_use(tmp_path):
+    live = tmp_path / "db.sqlite"
+    _make_db(live)
+    snap = tmp_path / "snap.sqlite"
+    maintenance.snapshot(live, snap)
+
+    blocker = _open(live)
+    blocker.execute("BEGIN IMMEDIATE")
+    try:
+        with pytest.raises(maintenance.RestoreError, match="appears in use"):
+            maintenance.restore(snap, live)
+    finally:
+        blocker.execute("ROLLBACK")
+        blocker.close()
+
+
+def test_restore_proceeds_when_live_db_not_in_use(tmp_path):
+    live = tmp_path / "db.sqlite"
+    _make_db(live)
+    snap = tmp_path / "snap.sqlite"
+    maintenance.snapshot(live, snap)
+
+    result = maintenance.restore(snap, live)
+
+    assert result["restored_from"] == snap
+    assert result["previous_backup"] is not None
+    assert Path(result["previous_backup"]).exists()
+    assert maintenance.verify(live)["ok"] is True
+
+
 # --------------------------------------------------------------------------- #
 # reembed (#43)
 # --------------------------------------------------------------------------- #

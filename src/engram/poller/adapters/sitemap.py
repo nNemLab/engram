@@ -51,7 +51,11 @@ class SitemapAdapter:
         cursor = json.loads(source.get("cursor") or "{}")
 
         interval_ms = cfg.get("request_interval_ms", 1000)
-        self._rate_limiter = AsyncRateLimiter(interval_ms=interval_ms)
+        # Per-fetch local, never stored on self: the adapter is a process-wide
+        # singleton in ADAPTERS and the poller now runs sources concurrently, so
+        # an instance attribute would let one source's limiter clobber another's
+        # mid-run (cross-source rate-limit bleed/stall).
+        rate_limiter = AsyncRateLimiter(interval_ms=interval_ms)
 
         cache = _read_cache(cursor)
 
@@ -62,7 +66,7 @@ class SitemapAdapter:
                 continue
             entry = cache.get(u)
             result = await fetch_with_politeness(
-                self._client, u, cache=entry, rate_limiter=self._rate_limiter
+                self._client, u, cache=entry, rate_limiter=rate_limiter
             )
             if result is None:
                 # 304 — preserve existing cache entry
