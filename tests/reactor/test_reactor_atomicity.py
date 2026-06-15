@@ -193,6 +193,59 @@ def test_crash_before_cursor_write_does_not_reemit(tmp_path, monkeypatch):
     ).fetchone()["last_event_id"] == evt_id
 
 
+def test_double_write_failure_does_not_advance_or_lose_event(tmp_path, monkeypatch):
+    """BLOCKING regression: when a budget-exhausted event's dead-letter+cursor
+    transaction fails AND the fallback cursor-only write ALSO fails, the cursor
+    must NOT advance past the event. The event stays pending and is retried from
+    the persisted cursor on the next pass -- it is never silently skipped/lost.
+
+    Distinguishing: with the old unconditional `return True`, the in-memory cursor
+    advanced past the failing event despite nothing being persisted, so the loop
+    moved on to the LATER event (skipping the failed one). With the fix, the loop
+    breaks and re-reads from the persisted cursor, so the later event is never
+    reached while the first one is unresolved.
+    """
+    conn = _conn(tmp_path)
+    fail_id = event_log.append(conn, "ingested", {"hash": "x"})
+    later_id = event_log.append(conn, "ingested", {"hash": "y"})
+
+    monkeypatch.setattr(rmod, "MAX_HANDLER_ATTEMPTS", 1)  # exhaust the budget at once
+
+    seen = []
+
+    def _always_fail(conn, evt):
+        seen.append(evt.id)
+        raise RuntimeError("permanent handler failure")
+
+    monkeypatch.setitem(rmod.HANDLERS, "ingested", _always_fail)
+
+    # BOTH the dead-letter write transaction and the fallback cursor write fail.
+    def _boom_dead_letter(*a, **k):
+        raise sqlite3.OperationalError("dead_letter write exploded")
+
+    def _boom_cursor(*a, **k):
+        raise sqlite3.OperationalError("cursor write exploded")
+
+    monkeypatch.setattr(rmod, "_dead_letter", _boom_dead_letter)
+    monkeypatch.setattr(rmod, "_write_cursor", _boom_cursor)
+
+    monkeypatch.setattr(rmod.time, "sleep", _stopper(2))  # two scheduled passes
+    with pytest.raises(_StopTick):
+        rmod._run_loop(conn)
+
+    # The cursor was never durably advanced past the failing event (no row, or
+    # still behind it) -- the event is not lost.
+    row = conn.execute(
+        "SELECT last_event_id FROM daemon_cursors WHERE name='reactor'"
+    ).fetchone()
+    assert row is None or row["last_event_id"] < fail_id
+
+    # The loop never skipped the failing event to reach the later one (which would
+    # be the symptom of the in-memory cursor advancing without durable persistence).
+    assert later_id not in seen
+    assert fail_id in seen
+
+
 def test_handler_effects_and_cursor_commit_together(tmp_path, monkeypatch):
     """Happy path: a processed event's effects and its cursor advance both land."""
     conn = _conn(tmp_path)

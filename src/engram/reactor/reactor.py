@@ -95,13 +95,18 @@ def _handle_failure(
         event on the next tick (the cursor stays at the last fully-processed
         event, preserving #111's no-silent-drop back-pressure);
       * budget exhausted -> dead-letter the event AND advance the cursor PAST it
-        in one transaction, returning True. The cursor MUST advance even if the
-        dead-letter WRITE itself fails, else a permanently-failing event whose DLQ
-        write also fails would head-of-line-block the stream forever (#115); fall
-        back to a cursor-only advance in that case (one DLQ record lost, logged).
+        in one transaction. The cursor MUST advance even if the dead-letter WRITE
+        itself fails (a permanently-failing event whose DLQ write also fails would
+        otherwise head-of-line-block the stream forever, #115), so fall back to a
+        cursor-only advance (one DLQ record lost, logged).
 
-    A failure of the attempt-counter bump itself propagates to the tick handler
-    (cursor stays put, event retried next tick) -- unchanged from before.
+    Returns True ONLY when the cursor advance was DURABLY persisted -- via either
+    the dead-letter+cursor transaction or the fallback cursor-only write. If BOTH
+    of those fail, returns False so the caller does NOT move the in-memory cursor
+    past the event: the (already attempt-bumped) event stays pending and is
+    retried from the persisted cursor on the next scheduled pass rather than being
+    silently skipped/lost. A failure of the attempt-counter bump itself propagates
+    to the tick handler (cursor stays put, event retried) -- unchanged from before.
     """
     with transaction(conn):
         attempts = _bump_attempts(conn, evt, exc)
@@ -119,18 +124,35 @@ def _handle_failure(
             "handler %s failed %d times for event %d; dead-lettering and advancing past it",
             evt.type, attempts, evt.id,
         )
+        return True
     except Exception:
         logger.exception(
             "handler %s failed %d times for event %d AND the dead-letter write failed; "
-            "advancing past it anyway to keep the stream unblocked (DLQ record lost)",
+            "trying a cursor-only advance to keep the stream unblocked (DLQ record lost)",
             evt.type, attempts, evt.id,
         )
-        try:
-            with transaction(conn):
-                _write_cursor(conn, evt.id)
-        except Exception:
-            logger.exception("reactor: cursor advance also failed for event %d", evt.id)
-    return True
+    # The dead-letter+cursor transaction failed. Try to at least persist the cursor
+    # so the exhausted event no longer blocks the stream.
+    try:
+        with transaction(conn):
+            _write_cursor(conn, evt.id)
+        logger.error(
+            "handler %s failed %d times for event %d; advanced past it without a DLQ record",
+            evt.type, attempts, evt.id,
+        )
+        return True
+    except Exception:
+        # Neither the DLQ write nor the fallback cursor write landed: the cursor was
+        # NOT durably advanced. Do NOT report 'advanced' -- moving the in-memory
+        # cursor now would skip the event without ever recording it (silent loss).
+        # Leave it pending; it retries from the persisted cursor on the next pass.
+        logger.exception(
+            "handler %s failed %d times for event %d AND both the dead-letter write "
+            "and the fallback cursor write failed; NOT advancing -- event stays "
+            "pending for retry next pass",
+            evt.type, attempts, evt.id,
+        )
+        return False
 
 
 def _run_loop(conn: sqlite3.Connection) -> None:
@@ -174,13 +196,17 @@ def _run_loop(conn: sqlite3.Connection) -> None:
                         _write_cursor(conn, evt.id)
                 except Exception as exc:
                     # The handler's effects rolled back with the transaction above.
-                    # Record the failure (retry budget / dead-letter) separately and
-                    # either advance past the event (dead-lettered) or stop the batch
-                    # to retry it on the next tick.
+                    # Record the failure (retry budget / dead-letter) separately.
+                    # _handle_failure returns True ONLY when the cursor was DURABLY
+                    # advanced past this event; advance the in-memory cursor only
+                    # then, so we never skip an event whose advance wasn't persisted.
                     if _handle_failure(conn, evt, exc):
-                        cursor = evt.id  # dead-lettered: advanced past it
+                        cursor = evt.id  # durably advanced past it (dead-lettered)
                         continue
-                    break  # under budget: retry on the next tick
+                    # Under budget, or the durable cursor advance failed: stop the
+                    # batch and retry from the persisted cursor on the next pass
+                    # (back-pressure; never a tight loop -- the loop sleeps a tick).
+                    break
                 else:
                     cursor = evt.id  # committed: handler effects + cursor together
         except Exception:
