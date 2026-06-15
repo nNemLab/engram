@@ -48,6 +48,9 @@ def _now_slug() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%d_%H%M%S")
 
 
+DEFAULT_PLAYBOOK_TIMEOUT_SECONDS = 300.0
+
+
 def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
     cfg = load_config()
 
@@ -85,6 +88,20 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "inputs.json").write_text(json.dumps(params, indent=2))
 
+        runtime_cfg = (cfg.playbooks.jupyter if runtime == "jupyter" else cfg.playbooks.marimo) or {}
+        raw_timeout = args.get("timeout_seconds")
+        if raw_timeout is None:
+            raw_timeout = runtime_cfg.get("timeout_seconds")
+        if raw_timeout is None:
+            timeout_seconds = DEFAULT_PLAYBOOK_TIMEOUT_SECONDS
+        else:
+            try:
+                timeout_seconds = float(raw_timeout)
+            except (TypeError, ValueError):
+                timeout_seconds = DEFAULT_PLAYBOOK_TIMEOUT_SECONDS
+        if timeout_seconds <= 0:
+            return {"error": f"timeout_seconds must be > 0 (got {timeout_seconds})"}
+
         if runtime == "jupyter":
             output = run_dir / "notebook.ipynb"
             cmd = [_resolve("papermill"), str(template), str(output), "--cwd", str(run_dir)]
@@ -95,26 +112,58 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
             for k, v in params.items():
                 cmd += [f"--{k}", str(v)]
 
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, cwd=run_dir,
-            env=_subprocess_env(cfg.paths.root),
-        )
-        (run_dir / "stdout.log").write_text(proc.stdout)
-        (run_dir / "stderr.log").write_text(proc.stderr)
+        timeout_hit = False
+        error = None
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                cwd=run_dir,
+                env=_subprocess_env(cfg.paths.root),
+                timeout=timeout_seconds,
+            )
+            stdout = proc.stdout
+            stderr = proc.stderr
+            exit_code = proc.returncode
+        except subprocess.TimeoutExpired as exc:
+            timeout_hit = True
+            error = f"playbook timed out after {timeout_seconds}s"
+            stdout = exc.stdout or exc.output or ""
+            stderr = exc.stderr or ""
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode(errors="replace")
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode(errors="replace")
+            exit_code = None
+
+        (run_dir / "stdout.log").write_text(stdout)
+        (run_dir / "stderr.log").write_text(stderr)
 
         event_log.append(
             conn, "playbook_run",
-            {"run_id": run_id, "playbook": name, "runtime": runtime, "params": params,
-             "exit_code": proc.returncode, "run_dir": str(run_dir)},
+            {
+                "run_id": run_id,
+                "playbook": name,
+                "runtime": runtime,
+                "params": params,
+                "exit_code": exit_code,
+                "timeout": timeout_hit,
+                "timeout_seconds": timeout_seconds,
+                "run_dir": str(run_dir),
+            },
             actor="agent",
         )
 
         return {
             "run_id": run_id,
             "run_dir": str(run_dir),
-            "exit_code": proc.returncode,
-            "stdout_tail": proc.stdout[-2000:],
-            "stderr_tail": proc.stderr[-2000:],
+            "exit_code": exit_code,
+            "stdout_tail": stdout[-2000:],
+            "stderr_tail": stderr[-2000:],
+            "timeout": timeout_hit,
+            "timeout_seconds": timeout_seconds,
+            **({"error": error} if error else {}),
         }
 
     def summarize(args: dict[str, Any]) -> dict[str, Any]:
@@ -148,6 +197,7 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
                     "name":    {"type": "string"},
                     "runtime": {"type": "string", "enum": ["jupyter", "marimo"]},
                     "params":  {"type": "object"},
+                    "timeout_seconds": {"type": "number", "exclusiveMinimum": 0},
                 },
             },
             "handler": run,
