@@ -167,6 +167,25 @@ def _on_change(conn: sqlite3.Connection, rel: str, abs_path: str) -> None:
         if old is None:
             logger.warning("vault_state %s references missing content %s; skipping", rel, old_hash)
             return
+        # Cross-source hash-reuse guard (mirrors dedup #153). If the edited bytes
+        # already exist as a content row under a DIFFERENT source_url (or NULL-vs-
+        # sourced), that row is NOT this file's revision -- demoting the old row and
+        # promoting `WHERE hash = new_hash` would mutate content under the WRONG
+        # source_url and leave THIS source_url with ZERO current rows. Never operate
+        # on such a hash: leave both sides intact and skip the swap. (A matching row
+        # under the SAME source_url is a legitimate revert to an existing revision
+        # and is handled by the swap below.)
+        existing_new = conn.execute(
+            "SELECT source_url FROM content WHERE hash = ?", (new_hash,)
+        ).fetchone()
+        if existing_new is not None and existing_new["source_url"] != old["source_url"]:
+            logger.warning(
+                "vault_edit: %s edited to bytes already owned by source_url %r "
+                "(this file's source_url is %r); not applying as a revision to avoid "
+                "cross-source corruption",
+                rel, existing_new["source_url"], old["source_url"],
+            )
+            return
         # Atomic (#83) revision swap. Ordered demote-before-promote so the
         # one-current-per-source_url unique index (migration 007) never sees two
         # is_current=1 rows for this source_url mid-sequence, and the superseded_by
@@ -207,12 +226,31 @@ def _on_change(conn: sqlite3.Connection, rel: str, abs_path: str) -> None:
                 "WHERE hash = ?",
                 (new_hash, now, old_hash),
             )
-            # Promote the new revision to current+protected -> exactly one current row.
+            # Promote the new revision to current+protected -> exactly one current
+            # row. Clear tombstoned too, so a revert to a previously-tombstoned
+            # same-source revision comes back live (mirrors dedup resurrection).
             conn.execute(
-                "UPDATE content SET is_current = 1, protected = 1, vault_path = ?, updated_at = ? "
-                "WHERE hash = ?",
+                "UPDATE content SET is_current = 1, protected = 1, tombstoned = 0, "
+                "vault_path = ?, updated_at = ? WHERE hash = ?",
                 (rel, now, new_hash),
             )
+            # MINIMUM BAR (#153): the edited source_url must end with EXACTLY ONE
+            # current, non-tombstoned row -- never zero, never two. If a concurrent
+            # change slipped past the cross-source guard above, raise and let the
+            # transaction ROLL BACK rather than commit a broken state. NULL
+            # source_url is exempt: the one-current index does not constrain it and
+            # `source_url = NULL` never matches.
+            if old["source_url"] is not None:
+                n_current = conn.execute(
+                    "SELECT COUNT(*) FROM content "
+                    "WHERE source_url = ? AND is_current = 1 AND tombstoned = 0",
+                    (old["source_url"],),
+                ).fetchone()[0]
+                if n_current != 1:
+                    raise RuntimeError(
+                        f"vault_edit: source_url {old['source_url']!r} would end with "
+                        f"{n_current} current rows after the swap; aborting"
+                    )
             conn.execute(
                 "UPDATE vault_state SET content_hash = ?, rendered_body = ?, rendered_at = ? "
                 "WHERE vault_path = ?",

@@ -120,6 +120,71 @@ def test_sourced_edit_with_unique_index_keeps_one_current(conn, tmp_path):
     assert current[0]["hash"] == new_hash
 
 
+def test_cross_source_identical_body_edit_does_not_zero_out_source(conn, tmp_path):
+    """BLOCKING (cross-source hash reuse): editing sourced file A to bytes that
+    already exist as a content row under a DIFFERENT source_url B must NOT demote
+    A's current row and promote/mutate B's row. A must keep exactly one current
+    row and B must be left completely untouched.
+
+    Without the cross-source guard + exactly-one-current assertion, the swap
+    demotes A's old row and promotes B's row by hash, leaving A with ZERO current
+    rows and repointing B's row at A's vault file.
+    """
+    from engram.dedup import content_hash
+    from engram.watcher import watcher
+
+    vault = tmp_path / "vault"
+    (vault / "030-research").mkdir(parents=True)
+
+    # B: a sourced content row with a distinctive body, projected to its own file.
+    b_rel = "030-research/B.md"
+    b_body = "content that already lives under source B"
+    b_hash = content_hash(b_body)
+    _seed_projected_row(conn, hash_=b_hash, body=b_body,
+                        source_url="https://x/B", vault_path=b_rel)
+    (vault / b_rel).write_text(b_body)
+
+    # A: a different sourced row, projected to A's own file.
+    a_rel = "030-research/A.md"
+    a_body = "original body for source A"
+    a_hash = content_hash(a_body)
+    _seed_projected_row(conn, hash_=a_hash, body=a_body,
+                        source_url="https://x/A", vault_path=a_rel)
+    (vault / a_rel).write_text(a_body)
+
+    # The human edits A's file to be byte-identical to B's existing content.
+    (vault / a_rel).write_text(b_body)
+    watcher._on_change(conn, a_rel, str(vault / a_rel))
+
+    # A still has EXACTLY ONE current row, and it is still A's original revision.
+    current_a = conn.execute(
+        "SELECT hash FROM content WHERE source_url = ? AND is_current = 1 AND tombstoned = 0",
+        ("https://x/A",),
+    ).fetchall()
+    assert len(current_a) == 1, "source A must never end with zero/two current rows"
+    assert current_a[0]["hash"] == a_hash
+
+    # B's row is completely unaffected: still current, still owned by B, still its
+    # own file, body unchanged.
+    b_row = conn.execute(
+        "SELECT source_url, is_current, vault_path, body FROM content WHERE hash = ?",
+        (b_hash,),
+    ).fetchone()
+    assert b_row["source_url"] == "https://x/B"
+    assert b_row["is_current"] == 1
+    assert b_row["vault_path"] == b_rel
+    assert b_row["body"] == b_body
+    # No row was promoted/repointed under the wrong source_url (B never claims A's file).
+    assert conn.execute(
+        "SELECT COUNT(*) FROM content WHERE source_url = ? AND vault_path = ?",
+        ("https://x/B", a_rel),
+    ).fetchone()[0] == 0
+    # B's vault_state still maps B's file to B's hash.
+    assert conn.execute(
+        "SELECT content_hash FROM vault_state WHERE vault_path = ?", (b_rel,)
+    ).fetchone()["content_hash"] == b_hash
+
+
 def test_old_revision_is_superseded_and_unmutated(conn, tmp_path):
     old_hash, new_hash, _ = _do_edit(conn, tmp_path)
 
