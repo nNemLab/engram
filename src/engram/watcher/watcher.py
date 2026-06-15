@@ -36,6 +36,7 @@ class _Debouncer:
         self.delay = delay_ms / 1000.0
         self.fn = fn
         self.timers: dict[str, threading.Timer] = {}
+        self._gen: dict[str, int] = {}
         self.lock = threading.Lock()
 
     def trigger(self, key: str, *args) -> None:
@@ -43,10 +44,32 @@ class _Debouncer:
             old = self.timers.pop(key, None)
             if old:
                 old.cancel()
-            t = threading.Timer(self.delay, self.fn, args=args)
+            gen = self._gen.get(key, 0) + 1
+            self._gen[key] = gen
+            t = threading.Timer(self.delay, self._fire, args=(key, gen, args))
             t.daemon = True
             self.timers[key] = t
             t.start()
+
+    def _fire(self, key: str, gen: int, args: tuple) -> None:
+        try:
+            self.fn(*args)
+        finally:
+            # Drop the fired timer so the map can't grow one dead Timer per
+            # edited path (#92). Skip if a newer trigger() superseded this
+            # generation while the callback was running.
+            with self.lock:
+                if self._gen.get(key) == gen:
+                    self.timers.pop(key, None)
+                    self._gen.pop(key, None)
+
+    def cancel_all(self) -> None:
+        """Cancel outstanding timers (shutdown path, #92)."""
+        with self.lock:
+            for t in self.timers.values():
+                t.cancel()
+            self.timers.clear()
+            self._gen.clear()
 
 
 def _ignored(rel: str, patterns: list[str]) -> bool:
@@ -201,5 +224,12 @@ def run() -> None:
         while True:
             time.sleep(60)
     except KeyboardInterrupt:
+        pass
+    finally:
+        # Graceful shutdown (#92): cancel any pending debounced timers, stop the
+        # observer, and close the long-lived DB connection so the daemon doesn't
+        # leak threads / file descriptors / WAL sidecars.
+        debouncer.cancel_all()
         observer.stop()
-    observer.join()
+        observer.join()
+        conn.close()

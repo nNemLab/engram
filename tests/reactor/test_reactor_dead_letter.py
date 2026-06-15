@@ -119,7 +119,7 @@ def test_transient_failure_retries_then_succeeds(tmp_path, monkeypatch):
     monkeypatch.setitem(rmod.HANDLERS, "ingested", _transient)
     monkeypatch.setattr(rmod.time, "sleep", _stopper(2))  # tick1: fail, tick2: succeed
     with pytest.raises(_StopTick):
-        rmod.run()
+        rmod._run_loop(conn)
 
     # Retried once, then succeeded.
     assert attempts["n"] == 2
@@ -171,7 +171,7 @@ def test_deterministic_failure_dead_lettered_and_stream_advances(tmp_path, monke
     # spent on tick 3, where it is dead-lettered and ok2 is processed.
     monkeypatch.setattr(rmod.time, "sleep", _stopper(3))
     with pytest.raises(_StopTick):
-        rmod.run()
+        rmod._run_loop(conn)
 
     # The failing event was retried exactly MAX_HANDLER_ATTEMPTS times.
     assert calls.count(fail_id) == 3
@@ -211,7 +211,7 @@ def test_dead_letter_record_created(tmp_path, monkeypatch):
     monkeypatch.setitem(rmod.HANDLERS, "ingested", _always_fail)
     monkeypatch.setattr(rmod.time, "sleep", _stopper(3))
     with pytest.raises(_StopTick):
-        rmod.run()
+        rmod._run_loop(conn)
 
     row = conn.execute(
         "SELECT event_id, event_type, attempts, error, dead_lettered_ts "
@@ -275,7 +275,7 @@ def test_dead_letter_write_failure_still_advances(tmp_path, monkeypatch):
     # 3 ticks: budget is spent on tick 3, where the dead-letter write fails.
     monkeypatch.setattr(rmod.time, "sleep", _stopper(3))
     with pytest.raises(_StopTick):
-        rmod.run()
+        rmod._run_loop(conn)
 
     # Despite the failed DLQ write, the cursor advanced PAST the exhausted event
     # and the later event was processed -- the stream is NOT permanently blocked.

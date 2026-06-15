@@ -33,6 +33,10 @@ class MediaWikiApiAdapter:
             headers={"user-agent": user_agent}, timeout=30.0,
         )
 
+    async def aclose(self) -> None:
+        """Close the underlying httpx client (poller shutdown path, #92)."""
+        await self._client.aclose()
+
     async def fetch(self, source: dict) -> AsyncIterator[Candidate]:
         cfg = json.loads(source.get("config") or "{}")
         namespaces: list[int] = cfg.get("namespaces", [0])

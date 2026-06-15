@@ -103,7 +103,7 @@ def test_handler_failure_stays_on_failed_event(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rmod.time, "sleep", _stop)
     with pytest.raises(_StopTick):
-        rmod.run()
+        rmod._run_loop(conn)
 
     # Handler was called twice: once for the good event, once for the failing event.
     assert call_count["n"] == 2
@@ -155,7 +155,7 @@ def test_preceding_events_committed_on_failure(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rmod.time, "sleep", _stop)
     with pytest.raises(_StopTick):
-        rmod.run()
+        rmod._run_loop(conn)
 
     # All three events hit the handler.
     assert call_order == [1, 2, fail_id]
@@ -195,7 +195,7 @@ def test_all_success_advances_cursor(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rmod.time, "sleep", _stop)
     with pytest.raises(_StopTick):
-        rmod.run()
+        rmod._run_loop(conn)
 
     cursor = conn.execute(
         "SELECT last_event_id FROM daemon_cursors WHERE name = 'reactor'"
@@ -234,7 +234,7 @@ def test_first_event_failure_keeps_zero_cursor(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rmod.time, "sleep", _stop)
     with pytest.raises(_StopTick):
-        rmod.run()
+        rmod._run_loop(conn)
 
     # Cursor stayed at 0 (the initial value before any event).
     # _write_cursor is only called when last != cursor; with the very first
@@ -296,7 +296,7 @@ def test_mixed_success_failure_then_recovery(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rmod.time, "sleep", _stop)
     with pytest.raises(_StopTick):
-        rmod.run()
+        rmod._run_loop(conn)
 
     # The failing event was attempted twice (first tick: fail, second tick: succeed).
     assert call_count["n"] == 5  # tick1: 4 events (1 fail); tick2: 3 events (fail now ok)
