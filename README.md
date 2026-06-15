@@ -25,6 +25,7 @@
 
 - [Highlights](#highlights)
 - [How it works](#how-it-works)
+- [Roadmap](#roadmap)
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
 - [Docker](#docker)
@@ -42,7 +43,7 @@
 
 - **Event-log-canonical.** Every state change is an immutable event in an
   append-only SQLite log. The FTS index, vector index, and Obsidian vault are
-  all rebuildable projections — the log is the only thing you have to back up.
+  all projections rebuilt from the database.
 - **Hybrid retrieval.** `sqlite-vec` vector search fused with SQLite FTS5
   full-text search via reciprocal-rank fusion, ranked by source-tier × recency ×
   confidence.
@@ -63,12 +64,12 @@ Engram treats:
 
 - **the event log as canonical** — every state change is an immutable event in SQLite,
 - **the Obsidian vault as a projection** — markdown files are a materialized view, not source of truth,
-- **the human and the agent as peers** — both write through the same dedup gate, both edit the same content.
+- **the human and the agent as peers** — the agent writes through the dedup gate, the human edits the vault directly, and both act on the same content.
 
 ```mermaid
 flowchart TD
     K["Claude Code · kernel"]
-    L[("Event Log — SQLite, append-only<br/>ingested · merged · superseded · retrieved · edit · source_polled")]
+    L[("Event Log — SQLite, append-only<br/>ingested · merged · superseded · retrieved · vault_edit · source_polled")]
     P["Projector<br/>log → vault"]
     R["RAG view<br/>vec0 + FTS5"]
     Rx["Reactor<br/>embed · staleness"]
@@ -97,14 +98,15 @@ flowchart TD
     class Po,A source
 ```
 
-Every content write goes through `dedup.gate()` and produces an `ingested`
-event. The reactor embeds and post-checks for near-dups. The projector renders
-content rows to the vault. The watcher tails the vault so manual edits in
-Obsidian become authoritative.
+Agent and source writes go through `dedup.gate()`, which classifies each
+candidate as `exact_dup`, `superseded`, `near_dup`, or `new`. The reactor embeds
+and post-checks for near-dups. The projector renders content rows to the vault.
+The watcher tails the vault so manual edits in Obsidian are applied directly and
+become authoritative.
 
 | Subsystem | Role |
 |---|---|
-| **Event log** | Append-only SQLite; canonical source of truth, replayable from 0. |
+| **Event log** | Append-only SQLite; the immutable, timestamped record of every state change. |
 | **Dedup gate** | The single write path: `exact_dup` / `superseded` / `near_dup` / `new`. |
 | **RAG** | Hybrid `vec0` + FTS5 retrieval, RRF-fused, ranked by confidence × source-tier × recency. |
 | **MCP server** | One server (stdio or HTTP), seven tool namespaces (`kb`, `rag`, `research`, `playbook`, `goals`, `sources`, `session`). |
@@ -117,6 +119,18 @@ Obsidian become authoritative.
 
 Full internals — component-by-component, the confidence model, and
 failure/recovery modes — are in [docs/architecture.md](docs/architecture.md).
+
+## Roadmap
+
+Two capabilities are **under development** and not available yet:
+
+- **Full log replay.** Today the unit you back up is the SQLite database. The
+  event log is a complete audit trail of every state change, but rebuilding all
+  content from the log alone (replay from event 0) is not yet implemented — the
+  goal is to make the log self-sufficient so it becomes the only thing you need
+  to back up.
+- **arXiv PDF ingestion.** `research.fetch_arxiv` currently returns abstracts
+  and PDF links; ingesting full PDF text is planned.
 
 ## Requirements
 
@@ -207,7 +221,7 @@ it — and all three land in the same gate.
 | Docs sites that change over time | `sitemap` source (e.g. Docker, a framework's docs) |
 | Wikis | `mediawiki-api` source (Fandom game wikis, Wikipedia, PCGamingWiki, …) |
 | A GitHub repo's docs/code tree | `github-repo` source (tracks branch HEAD, incremental via compare API) |
-| Research papers | `research.fetch_arxiv` (abstracts + PDFs) |
+| Research papers | `research.fetch_arxiv` (abstracts + PDF links; full-PDF ingestion is [on the roadmap](#roadmap)) |
 | One-off pages with no feed | `urls` source, or `research.ingest_url` |
 | Web-search findings | `research.search_web` via your local SearXNG, then ingest the keepers |
 
