@@ -33,6 +33,7 @@ node_modules/
 .next/
 
 # Claude Code / agent harness files (local to the workstation, not project source)
+.polly/
 CLAUDE.md
 CLAUDE.local.md
 .claude/
