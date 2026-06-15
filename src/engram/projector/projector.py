@@ -133,7 +133,8 @@ def run() -> None:
     while True:
         try:
             last_seen = cursor
-            for evt in event_log.since(conn, cursor, types=["ingested", "merged", "superseded"]):
+            for evt in event_log.since(conn, cursor, types=["ingested", "merged", "superseded"],
+                                       yield_poison=True):
                 if evt.poison:
                     # Dead-letter an un-parseable payload and advance past it so
                     # one corrupt row can't freeze the loop and drop every later

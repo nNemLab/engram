@@ -139,7 +139,16 @@ def _row_to_event(row: sqlite3.Row) -> Event:
 
 
 def since(conn: sqlite3.Connection, last_id: int, types: list[str] | None = None,
-          limit: int = 1000) -> Iterator[Event]:
+          limit: int = 1000, *, yield_poison: bool = False) -> Iterator[Event]:
+    """Yield typed events with id > last_id, oldest first.
+
+    By default a row whose payload is not valid JSON raises ``json.JSONDecodeError``
+    (the historical behavior every consumer relies on). Pass ``yield_poison=True``
+    to instead surface such a row as a flagged ``Event(payload={}, poison=True)``
+    carrying its id, so an opting-in caller can dead-letter it and advance past it
+    rather than crash (#84). This is opt-in so shared consumers that do not check
+    ``Event.poison`` keep their exact existing semantics.
+    """
     if types:
         q_marks = ",".join("?" * len(types))
         rows = conn.execute(
@@ -152,13 +161,18 @@ def since(conn: sqlite3.Connection, last_id: int, types: list[str] | None = None
             (last_id, limit),
         )
     for r in rows:
+        if not yield_poison:
+            # Default path: unchanged for every existing consumer — a corrupt
+            # payload propagates as json.JSONDecodeError exactly as before.
+            yield _row_to_event(r)
+            continue
         try:
             yield _row_to_event(r)
         except json.JSONDecodeError:
-            # Poison row: surface it as a flagged Event (carrying the id) instead
-            # of raising, so a single corrupt payload can't abort the whole
-            # iteration and freeze a daemon's cursor (#84). Narrowly scoped to
-            # JSON decode failures so genuine bugs still propagate.
+            # Opt-in poison handling: surface the row as a flagged Event (carrying
+            # the id) instead of raising, so a single corrupt payload can't abort
+            # the whole iteration and freeze a daemon's cursor (#84). Narrowly
+            # scoped to JSON decode failures so genuine bugs still propagate.
             yield Event(
                 id=r["id"],
                 ts=r["ts"],
