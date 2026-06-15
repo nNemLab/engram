@@ -56,7 +56,30 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
         except safe_fetch.UnsafeURLError as e:
             return {"error": str(e)}
         r.raise_for_status()
-        body = trafilatura.extract(r.text, include_comments=False, include_tables=True)
+
+        # Guard: only HTML/text responses reach trafilatura.
+        ct = r.headers.get("content-type", "").lower()
+        body_bytes = r.content
+        if "text" not in ct:
+            return {
+                "error": f"unsupported content-type {ct!r} for {url} "
+                         "(expected HTML/text — use a text-based URL or "
+                         "provide body directly via research.fetch_url)",
+            }
+        # Sanity check: refuse obvious binary blobs that slip through
+        # (e.g. a content-disposition response returning raw PDF bytes
+        # with a misleading content-type).
+        if body_bytes[:4] == b"%PDF":
+            return {
+                "error": f"refusing PDF response for {url} "
+                         "(PDF extraction is not supported by ingest_url — "
+                         "use a text-based URL or provide body via "
+                         "research.fetch_url)",
+            }
+
+        body = trafilatura.extract(
+            r.text, include_comments=False, include_tables=True,
+        )
         if not body:
             return {"error": f"trafilatura returned no content for {url}"}
         meta = trafilatura.extract_metadata(r.text)
@@ -143,7 +166,9 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
             "handler": fetch_url,
         },
         "research.ingest_url": {
-            "description": "Server-side fetch + trafilatura extract + gate. One-shot URL ingest.",
+            "description": "Server-side fetch + trafilatura extract + gate. One-shot URL ingest. "
+                           "Only accepts HTML/text content-types; rejects PDFs and other binary "
+                           "responses with a structured error.",
             "input_schema": {
                 "type": "object", "required": ["url"],
                 "properties": {
@@ -173,7 +198,8 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
             "description": "Search arXiv (titles + abstracts), reranked by cross-encoder. "
                            "Multi-word queries are auto-quoted (exact phrase) by default — set "
                            "quote_phrase=false for broad keyword OR-search. "
-                           "Use the pdf_url with research.ingest_url to store the full paper.",
+                           "Returns abstracts only. For full papers, download the PDF separately "
+                           "and use research.fetch_url with the extracted text.",
             "input_schema": {
                 "type": "object", "required": ["query"],
                 "properties": {
