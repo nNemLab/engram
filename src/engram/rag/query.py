@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC
+from datetime import UTC, datetime
 
 from .. import log as event_log
 from ..common.config import load_config
@@ -32,7 +32,9 @@ class Hit:
 def _vector_hits(conn: sqlite3.Connection, query_emb: bytes, k: int) -> list[tuple[str, float]]:
     rows = conn.execute(
         "SELECT content_hash, distance FROM embeddings "
-        "WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
+        "WHERE embedding MATCH ? "
+        "AND content_hash IN (SELECT hash FROM content WHERE tombstoned = 0) "
+        "ORDER BY distance LIMIT ?",
         (query_emb, k),
     ).fetchall()
     return [(r["content_hash"], l2_to_cosine(float(r["distance"]))) for r in rows]
@@ -80,16 +82,42 @@ def _rrf_fuse(rankings: list[list[tuple[str, float]]], k: int, rrf_k: int) -> li
     return sorted(scores.items(), key=lambda x: x[1], reverse=True)[:k]
 
 
-def _confidence_decay(fetched_at: str | None, half_life_days: int) -> float:
-    if not fetched_at:
-        return 1.0
-    from datetime import datetime
+def _parse_timestamp(ts: str | None) -> datetime | None:
+    if not ts:
+        return None
     try:
-        ts = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except ValueError:
+        return None
+
+
+def _confidence_decay(fetched_at: str | None, half_life_days: int) -> float:
+    ts = _parse_timestamp(fetched_at)
+    if ts is None:
         return 1.0
     age_days = max(0.0, (datetime.now(UTC) - ts).total_seconds() / 86400.0)
     return 0.5 ** (age_days / max(1, half_life_days))
+
+
+def _recency_score(
+    *,
+    fetched_at: str | None,
+    enabled: bool,
+    weight: float,
+    half_life_days: int,
+    now: datetime | None = None,
+) -> float:
+    if not enabled or weight <= 0.0:
+        return 1.0
+    ts = _parse_timestamp(fetched_at)
+    if ts is None:
+        return 1.0
+    ref = now or datetime.now(UTC)
+    age_days = max(0.0, (ref - ts).total_seconds() / 86400.0)
+    decay = 0.5 ** (age_days / max(1, half_life_days))
+    # Blend with neutral 1.0 so the recency term can be tuned from no-op (0)
+    # to full exponential decay (1) without disrupting existing ranking.
+    return (1.0 - weight) + (weight * decay)
 
 
 # Built-in per-tier authority weights, applied when a tier is absent from
@@ -158,6 +186,9 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = N
 
     weights = cfg.confidence.source_tier_weights
     half_life = cfg.confidence.recency_half_life_days
+    recency_enabled = cfg.confidence.recency_score_enabled
+    recency_weight = cfg.confidence.recency_score_weight
+    recency_half_life = cfg.confidence.recency_score_half_life_days
     hits: list[Hit] = []
     for h, rrf_score in fused:
         r = by_hash.get(h)
@@ -178,6 +209,12 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = N
         tier_w = _tier_weight(weights, r["source_tier"])
         decay = _confidence_decay(r["fetched_at"], half_life)
         uf = usage_factor(conn, h, weight=cfg.grounding.usage_weight)
+        recency = _recency_score(
+            fetched_at=r["fetched_at"],
+            enabled=recency_enabled,
+            weight=recency_weight,
+            half_life_days=recency_half_life,
+        )
         # Relevance combines the fused rank (recall, incl. BM25-only hits) with
         # the dense cosine MAGNITUDE. RRF alone collapses relevance to a near-
         # constant band, letting the confidence/tier/usage priors swamp it — an
@@ -185,7 +222,7 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = N
         # Adding dense_sim restores the real spread, so priors only reorder hits
         # of comparable relevance (tie-break) rather than override clear gaps.
         relevance = rrf_score + (dense_map.get(h) or 0.0)
-        ranked_score = relevance * (r["confidence"] or 0.5) * tier_w * decay * uf
+        ranked_score = relevance * (r["confidence"] or 0.5) * tier_w * decay * uf * recency
         hits.append(Hit(
             hash=h, title=r["title"], body=r["body"], score=ranked_score,
             source_url=r["source_url"], confidence=r["confidence"], fetched_at=r["fetched_at"],

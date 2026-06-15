@@ -39,7 +39,9 @@ def on_ingested(conn: sqlite3.Connection, evt: event_log.Event) -> None:
     # drop self in Python.
     rows = conn.execute(
         "SELECT content_hash, distance FROM embeddings "
-        "WHERE embedding MATCH ? AND k = 2 ORDER BY distance",
+        "WHERE embedding MATCH ? "
+        "AND content_hash IN (SELECT hash FROM content WHERE tombstoned = 0) "
+        "AND k = 2 ORDER BY distance",
         (emb,),
     ).fetchall()
     near = next((r for r in rows if r["content_hash"] != h), None)
@@ -48,6 +50,7 @@ def on_ingested(conn: sqlite3.Connection, evt: event_log.Event) -> None:
         if sim >= cfg.rag.near_dup_threshold:
             kept = near["content_hash"]
             conn.execute("UPDATE content SET tombstoned = 1 WHERE hash = ?", (h,))
+            conn.execute("DELETE FROM embeddings WHERE content_hash = ?", (h,))
             event_log.append(
                 conn, "merged",
                 {"hash_kept": kept, "hash_tombstoned": h, "reason": "near_dup_post_embed", "similarity": sim},

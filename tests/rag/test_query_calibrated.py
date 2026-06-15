@@ -1,4 +1,6 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -8,7 +10,13 @@ from tests.rag import fresh_conn
 def _stub_cfg(monkeypatch, **over):
     base = SimpleNamespace(
         rag=SimpleNamespace(top_k=12, rrf_k=60, embed_dim=4),
-        confidence=SimpleNamespace(source_tier_weights={}, recency_half_life_days=365),
+        confidence=SimpleNamespace(
+            source_tier_weights={},
+            recency_half_life_days=365,
+            recency_score_enabled=True,
+            recency_score_weight=0.2,
+            recency_score_half_life_days=30,
+        ),
         grounding=SimpleNamespace(usage_weight=0.5, tau_high=0.62, tau_low=0.45, delta=0.08,
                                   token_budget=1500),
     )
@@ -56,6 +64,21 @@ def test_citation_boosts_ranking(tmp_path, monkeypatch):
     hits = q.hybrid_search(conn, "alpha", log_retrieval=False)
     order = [h.hash for h in hits]
     assert order.index("h2") < order.index("h1"), "cited h2 should rank above h1"
+
+
+def test_vector_hits_query_filters_tombstoned_rows():
+    import engram.rag.query as q
+
+    conn = Mock()
+    cur = Mock()
+    cur.fetchall.return_value = [{"content_hash": "live", "distance": 0.0}]
+    conn.execute.return_value = cur
+
+    hits = q._vector_hits(conn, b"qemb", 2)
+
+    assert [h for h, _ in hits] == ["live"]
+    sql = conn.execute.call_args.args[0]
+    assert "tombstoned = 0" in sql
 
 
 def test_since_filters_old_entries(tmp_path, monkeypatch):
@@ -165,6 +188,105 @@ def test_relevant_outranks_higher_confidence_irrelevant(tmp_path, monkeypatch):
     order = [h.hash for h in hits]
     assert order.index("rel") < order.index("irr"), \
         "dense-more-relevant must outrank higher-confidence-but-less-relevant"
+
+
+def test_recency_score_prefers_fresher_docs(tmp_path, monkeypatch):
+    conn = fresh_conn(tmp_path)
+    conn.execute(
+        "INSERT INTO content (hash, title, body, source_url, source_tier, fetched_at, "
+        "confidence, kind, tombstoned) VALUES (?,?,?,?,?,?,?,?,0)",
+        ("old", "Old", "alpha shared term", None, "manual", "2026-01-01T00:00:00Z", 0.8, "kb"),
+    )
+    conn.execute(
+        "INSERT INTO content (hash, title, body, source_url, source_tier, fetched_at, "
+        "confidence, kind, tombstoned) VALUES (?,?,?,?,?,?,?,?,0)",
+        ("new", "New", "alpha shared term", None, "manual", "2026-06-01T00:00:00Z", 0.8, "kb"),
+    )
+    import engram.rag.query as q
+
+    monkeypatch.setattr(q, "datetime", SimpleNamespace(
+        now=lambda tz=None: datetime(2026, 6, 10, tzinfo=UTC),
+        fromisoformat=datetime.fromisoformat,
+    ))
+    monkeypatch.setattr(q, "embed_one", lambda s: b"x")
+    # Older doc has stronger dense relevance; recency ON should flip this order.
+    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [("old", 0.95), ("new", 0.80)])
+
+    _stub_cfg(
+        monkeypatch,
+        confidence=SimpleNamespace(
+            source_tier_weights={},
+            recency_half_life_days=100000,
+            recency_score_enabled=False,
+            recency_score_weight=1.0,
+            recency_score_half_life_days=30,
+        ),
+    )
+    off_hits = q.hybrid_search(conn, "alpha", log_retrieval=False)
+    assert [h.hash for h in off_hits][:2] == ["old", "new"]
+
+    _stub_cfg(
+        monkeypatch,
+        confidence=SimpleNamespace(
+            source_tier_weights={},
+            recency_half_life_days=100000,
+            recency_score_enabled=True,
+            recency_score_weight=1.0,
+            recency_score_half_life_days=30,
+        ),
+    )
+    on_hits = q.hybrid_search(conn, "alpha", log_retrieval=False)
+    assert [h.hash for h in on_hits][:2] == ["new", "old"]
+
+
+def test_recency_score_toggle_and_weight_controls_impact(tmp_path, monkeypatch):
+    # No recency weighting: preserve raw relevance order.
+    _stub_cfg(
+        monkeypatch,
+        confidence=SimpleNamespace(
+            source_tier_weights={},
+            recency_half_life_days=100000,
+            recency_score_enabled=False,
+            recency_score_weight=1.0,
+            recency_score_half_life_days=30,
+        ),
+    )
+    conn = fresh_conn(tmp_path)
+    conn.execute(
+        "INSERT INTO content (hash, title, body, source_url, source_tier, fetched_at, "
+        "confidence, kind, tombstoned) VALUES (?,?,?,?,?,?,?,?,0)",
+        ("old", "Old", "alpha shared term", None, "manual", "2026-01-01T00:00:00Z", 0.8, "kb"),
+    )
+    conn.execute(
+        "INSERT INTO content (hash, title, body, source_url, source_tier, fetched_at, "
+        "confidence, kind, tombstoned) VALUES (?,?,?,?,?,?,?,?,0)",
+        ("new", "New", "alpha shared term", None, "manual", "2026-06-01T00:00:00Z", 0.8, "kb"),
+    )
+    import engram.rag.query as q
+
+    monkeypatch.setattr(q, "datetime", SimpleNamespace(
+        now=lambda tz=None: datetime(2026, 6, 10, tzinfo=UTC),
+        fromisoformat=datetime.fromisoformat,
+    ))
+    monkeypatch.setattr(q, "embed_one", lambda s: b"x")
+    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [("old", 0.95), ("new", 0.80)])
+
+    disabled_hits = q.hybrid_search(conn, "alpha", log_retrieval=False)
+    assert [h.hash for h in disabled_hits][:2] == ["old", "new"]
+
+    # Weight 0 should be equivalent to disabled even if enabled is true.
+    _stub_cfg(
+        monkeypatch,
+        confidence=SimpleNamespace(
+            source_tier_weights={},
+            recency_half_life_days=100000,
+            recency_score_enabled=True,
+            recency_score_weight=0.0,
+            recency_score_half_life_days=30,
+        ),
+    )
+    zero_weight_hits = q.hybrid_search(conn, "alpha", log_retrieval=False)
+    assert [h.hash for h in zero_weight_hits][:2] == ["old", "new"]
 
 
 def test_bm25_matches_on_any_term_not_conjunction(tmp_path, monkeypatch):

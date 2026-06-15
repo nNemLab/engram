@@ -44,7 +44,10 @@ confidence:
     agent-derived: 0.60
     blog:          0.55
     forum:         0.30
-  recency_half_life_days: 365   # exponential decay; topic-specific overrides via ttl_days on content
+  recency_half_life_days: 365   # confidence-aging half-life on fetched_at (existing behavior)
+  recency_score_enabled: false  # opt-in query-time recency scoring term in ranking
+  recency_score_weight: 0.2     # blend weight for recency score (0=no effect, 1=full decay)
+  recency_score_half_life_days: 30  # half-life (days) for recency scoring when enabled
 
 # Vault projector.
 projector:

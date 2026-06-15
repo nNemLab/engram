@@ -7,10 +7,14 @@ components (grounding, near-dup) work on the true cosine scale.
 from __future__ import annotations
 
 import math
+import sqlite3
+import struct
 from unittest.mock import Mock
 
 import pytest
+import sqlite_vec
 
+from engram.common.db import init_schema
 from engram.rag._cosine import l2_to_cosine
 
 # ---------------------------------------------------------------------------
@@ -145,6 +149,35 @@ def test_grounding_weak_at_true_cosine_0_50():
 # ---------------------------------------------------------------------------
 # Integration: near-dup dedup at true cosine scale
 # ---------------------------------------------------------------------------
+
+def test_find_near_ignores_tombstoned_rows_real_vec(tmp_path):
+    """The near-dup query must never return a tombstoned nearest neighbor."""
+    from engram.dedup import find_near
+
+    conn = sqlite3.connect(tmp_path / "t.sqlite")
+    conn.row_factory = sqlite3.Row
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
+    init_schema(conn, embed_dim=4)
+
+    conn.execute(
+        "INSERT INTO content (hash, body, title, tombstoned) VALUES (?, ?, ?, ?)",
+        ("dead", "dead body", "Dead", 1),
+    )
+    conn.execute(
+        "INSERT INTO content (hash, body, title, tombstoned) VALUES (?, ?, ?, ?)",
+        ("live", "live body", "Live", 0),
+    )
+
+    vec = struct.pack("4f", 1.0, 0.0, 0.0, 0.0)
+    conn.execute("INSERT INTO embeddings (content_hash, embedding) VALUES (?, ?)", ("dead", vec))
+    conn.execute("INSERT INTO embeddings (content_hash, embedding) VALUES (?, ?)", ("live", vec))
+
+    near = find_near(conn, vec, 0.92)
+    assert near is not None
+    assert near[0] == "live"
+
 
 def test_near_dup_detects_at_correct_cosine_threshold():
     """Call the REAL dedup.find_near with a mocked DB row.

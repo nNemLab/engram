@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 from engram.poller.adapters._http import (
+    MAX_RETRY_AFTER_SECONDS,
     AsyncRateLimiter,
     HTTPCacheEntry,
     fetch_with_politeness,
@@ -91,6 +92,31 @@ async def test_retry_after_60_does_not_actually_sleep_in_test():
             with pytest.raises(httpx.HTTPStatusError):
                 await fetch_with_politeness(c, "https://x/p", rate_limiter=rl)
     assert 60.0 in sleeps
+
+
+@pytest.mark.asyncio
+async def test_hostile_retry_after_is_capped():
+    """A hostile `Retry-After: 86400` (a full day) is clamped to the max."""
+    calls = {"n": 0}
+    def h(req):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"retry-after": "86400"})
+        return httpx.Response(200, text="ok")
+    sleeps = []
+    async def fake_sleep(s):
+        sleeps.append(s)
+    rl = AsyncRateLimiter(interval_ms=0)
+    with patch("engram.poller.adapters._http.asyncio.sleep", side_effect=fake_sleep):
+        async with _client(h) as c:
+            r = await fetch_with_politeness(c, "https://x/p", rate_limiter=rl)
+    assert r is not None
+    assert calls["n"] == 2
+    # 86400s requested, but the awaited backoff is clamped to the cap — a single
+    # source can never park its coroutine for a day.
+    assert max(sleeps) <= MAX_RETRY_AFTER_SECONDS
+    assert MAX_RETRY_AFTER_SECONDS in sleeps
+    assert 86400.0 not in sleeps
 
 
 @pytest.mark.asyncio

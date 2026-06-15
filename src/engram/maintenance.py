@@ -15,8 +15,10 @@ so tests and callers can never accidentally operate on the real ~/.engram DB.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import sqlite3
+import tempfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -280,6 +282,78 @@ class RestoreError(RuntimeError):
     """Raised when a restore cannot proceed safely (e.g. corrupt snapshot)."""
 
 
+def _reserve_pre_restore_backup_path(
+    db_path: Path,
+    backup_dir: Path | str | None,
+) -> Path:
+    """Reserve a unique pre-restore backup filename.
+
+    Uses a millisecond UTC timestamp in the filename for readability and an
+    atomically-created mkstemp suffix for collision-proof uniqueness.
+    """
+    ts = utcnow_iso(precision="ms").replace(":", "").replace(".", "")
+    parent = db_path.parent if backup_dir is None else Path(backup_dir)
+    parent.mkdir(parents=True, exist_ok=True)
+    fd, reserved = tempfile.mkstemp(
+        dir=parent,
+        prefix=f"{db_path.name}.pre-restore-{ts}-",
+    )
+    os.close(fd)
+    return Path(reserved)
+
+
+def _assert_db_not_in_use(db_path: Path) -> None:
+    """Best-effort guard: refuse restore when the live DB appears active.
+
+    Detection strategy:
+      * if -wal/-shm sidecars exist, run PRAGMA wal_checkpoint(PASSIVE) and
+        refuse when SQLite reports BUSY (active readers/writers pinning WAL);
+      * acquire BEGIN IMMEDIATE with busy_timeout=0 (fails if another writer holds
+        the DB lock).
+
+    This is intentionally conservative around active WAL activity before restore,
+    which would otherwise overwrite db.sqlite then unlink sidecars.
+    """
+    if not db_path.exists():
+        return
+
+    conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=0)
+    tx_started = False
+    try:
+        conn.execute("PRAGMA busy_timeout = 0")
+
+        wal = db_path.with_name(db_path.name + "-wal")
+        shm = db_path.with_name(db_path.name + "-shm")
+        if wal.exists() or shm.exists():
+            try:
+                busy, _log_frames, _ckpt_frames = conn.execute(
+                    "PRAGMA wal_checkpoint(PASSIVE)"
+                ).fetchone()
+            except sqlite3.OperationalError as exc:
+                raise RestoreError(
+                    f"refusing to restore: live database appears in use at {db_path} "
+                    f"(could not probe WAL activity: {exc})"
+                ) from exc
+            if int(busy) != 0:
+                raise RestoreError(
+                    f"refusing to restore: live database appears in use at {db_path} "
+                    "(active WAL readers/writers detected; checkpoint is busy)"
+                )
+
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            tx_started = True
+        except sqlite3.OperationalError as exc:
+            raise RestoreError(
+                f"refusing to restore: live database appears in use at {db_path} "
+                f"(could not acquire write lock: {exc})"
+            ) from exc
+    finally:
+        if tx_started:
+            conn.execute("ROLLBACK")
+        conn.close()
+
+
 def restore(
     snapshot_path: Path | str,
     db_path: Path | str,
@@ -290,9 +364,12 @@ def restore(
 
     1. Verify the incoming snapshot; if it fails integrity, RAISE (a corrupt
        snapshot is never swapped in) — the live DB is left untouched.
-    2. Back up the *current* db_path (if present) to a timestamped sidecar
-       before overwriting, into `backup_dir` if given, else alongside db_path.
-    3. Copy the snapshot over db_path and remove any stale -wal/-shm sidecars so
+    2. Refuse restore when the live DB appears in use (best-effort lock/WAL
+       activity detection) so we never overwrite an actively-used database.
+    3. Back up the *current* db_path (if present) to a collision-proof,
+       timestamped sidecar before overwriting, into `backup_dir` if given, else
+       alongside db_path.
+    4. Copy the snapshot over db_path and remove any stale -wal/-shm sidecars so
        the restored file is authoritative.
 
     The vault markdown files on disk are NOT touched: the projector reconciles
@@ -314,16 +391,11 @@ def restore(
             f"{len(report['hash_mismatches'])} hash mismatch(es))"
         )
 
+    _assert_db_not_in_use(db_path)
+
     previous_backup: Path | None = None
     if db_path.exists():
-        ts = utcnow_iso(precision="s").replace(":", "")
-        backup_name = f"{db_path.name}.pre-restore-{ts}"
-        if backup_dir is not None:
-            backup_dir = Path(backup_dir)
-            backup_dir.mkdir(parents=True, exist_ok=True)
-            previous_backup = backup_dir / backup_name
-        else:
-            previous_backup = db_path.with_name(backup_name)
+        previous_backup = _reserve_pre_restore_backup_path(db_path, backup_dir)
         shutil.copy2(db_path, previous_backup)
 
     # Swap: copy snapshot over db_path, then drop stale WAL/SHM sidecars.

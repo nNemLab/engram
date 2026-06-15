@@ -16,7 +16,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from ..common.db import db_lock, get_connection
+from ..common.db import LockingConnection, get_connection
 from . import tools as toolmod
 
 logger = logging.getLogger("engram.mcp")
@@ -24,18 +24,19 @@ logger = logging.getLogger("engram.mcp")
 
 def build_server() -> Server:
     server = Server("engram")
-    conn = get_connection()
+    # Tool handlers run on `asyncio.to_thread` worker threads and all share this
+    # one long-lived connection. Wrap it in `LockingConnection` so every access
+    # to the shared connection (reads AND writes) is serialized under the
+    # process-wide DB lock (#83) — the multi-statement write paths (dedup gate,
+    # resolve, sources) stay atomic via `transaction()` and nothing races into
+    # `database is locked`. The lock is narrowed to the DB-touching calls only,
+    # so a handler's non-DB work (research network fetch, playbook subprocess)
+    # runs concurrently with other tool calls instead of being serialized (#113).
+    conn = LockingConnection(get_connection())
     registry = toolmod.build_registry(conn)
-    lock = db_lock()
 
     def _invoke(handler: Any, args: dict[str, Any]) -> Any:
-        # Tool handlers run on `asyncio.to_thread` worker threads and all share
-        # the one long-lived `conn`. Hold the process-wide DB lock for the whole
-        # handler so concurrent tool calls never drive the single connection at
-        # once (#83) — the multi-statement write paths (dedup gate, resolve,
-        # sources) stay atomic and never race into `database is locked`.
-        with lock:
-            return handler(args)
+        return handler(args)
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
