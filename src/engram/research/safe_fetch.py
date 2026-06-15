@@ -84,26 +84,31 @@ def assert_public_url(url: str) -> None:
 
 def _pin_to_validated_ip(
     url: str,
-) -> tuple[str, dict[str, str] | None, dict[str, str] | None]:
-    """Validate `url` and return ``(connect_url, headers, extensions)`` that pin
-    the connection to a validated IP, closing the DNS-rebinding window.
+) -> list[tuple[str, dict[str, str] | None, dict[str, str] | None]]:
+    """Validate `url` and return connect attempts pinned to validated IPs.
 
     For an IP-literal host the URL is returned unchanged (no DNS, nothing to
-    pin). For a hostname the connect URL targets a validated IP literal, with
-    the original host carried in the ``Host`` header and the TLS ``sni_hostname``
-    so certificate verification still runs against the hostname. Raises
-    UnsafeURLError if any resolved address is not globally routable.
+    pin). For a hostname each validated address yields one connect attempt: the
+    connect URL targets an IP literal while the original host is preserved in
+    the ``Host`` header and TLS ``sni_hostname`` so certificate verification
+    still runs against the hostname. Raises UnsafeURLError if any resolved
+    address is not globally routable.
     """
     scheme, host, port, addrs, is_literal = _resolve(url)
     _reject_non_global(addrs, url)
     if is_literal:
-        return url, None, None
+        return [(url, None, None)]
 
-    ip = addrs[0]
-    connect_url = str(httpx.URL(url).copy_with(host=str(ip)))
     default_port = _DEFAULT_PORTS[scheme]
     host_header = host if port in (None, default_port) else f"{host}:{port}"
-    return connect_url, {"Host": host_header}, {"sni_hostname": host}
+    return [
+        (
+            str(httpx.URL(url).copy_with(host=str(ip))),
+            {"Host": host_header},
+            {"sni_hostname": host},
+        )
+        for ip in addrs
+    ]
 
 
 def _next_hop(url: str, response: httpx.Response) -> str | None:
@@ -123,9 +128,19 @@ def get(url: str, *, timeout: float = 25.0, headers: dict[str, str] | None = Non
     """
     with httpx.Client(transport=transport, timeout=timeout, headers=headers) as client:
         for _ in range(max_redirects + 1):
-            connect_url, pin_headers, extensions = _pin_to_validated_ip(url)
-            r = client.get(connect_url, follow_redirects=False,
-                           headers=pin_headers, extensions=extensions)
+            attempts = _pin_to_validated_ip(url)
+            last_err: Exception | None = None
+            for connect_url, pin_headers, extensions in attempts:
+                try:
+                    r = client.get(connect_url, follow_redirects=False,
+                                   headers=pin_headers, extensions=extensions)
+                    break
+                except httpx.ConnectError as e:
+                    last_err = e
+            else:
+                assert last_err is not None
+                raise last_err
+
             nxt = _next_hop(url, r)
             if nxt is None:
                 return r
@@ -139,11 +154,20 @@ async def get_async(client: httpx.AsyncClient, url: str, *, timeout: float = 12.
     """Async variant; DNS validation + IP pinning runs in a thread to keep the
     loop free. The connection is pinned to the validated IP on every hop."""
     for _ in range(max_redirects + 1):
-        connect_url, pin_headers, extensions = await asyncio.to_thread(
-            _pin_to_validated_ip, url)
-        merged = {**(headers or {}), **pin_headers} if pin_headers else headers
-        r = await client.get(connect_url, timeout=timeout, headers=merged,
-                             extensions=extensions, follow_redirects=False)
+        attempts = await asyncio.to_thread(_pin_to_validated_ip, url)
+        last_err: Exception | None = None
+        for connect_url, pin_headers, extensions in attempts:
+            merged = {**(headers or {}), **pin_headers} if pin_headers else headers
+            try:
+                r = await client.get(connect_url, timeout=timeout, headers=merged,
+                                     extensions=extensions, follow_redirects=False)
+                break
+            except httpx.ConnectError as e:
+                last_err = e
+        else:
+            assert last_err is not None
+            raise last_err
+
         nxt = _next_hop(url, r)
         if nxt is None:
             return r

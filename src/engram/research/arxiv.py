@@ -37,7 +37,8 @@ def search(query: str, *, k: int = 5, fetch_multiplier: int = 3,
     import arxiv  # imported lazily — small dep, no infra
 
     effective_query = query
-    if quote_phrase and len(query.split()) > 1 and '"' not in query:
+    has_field_prefix = any(prefix in query for prefix in ("au:", "ti:", "abs:", "cat:"))
+    if quote_phrase and len(query.split()) > 1 and '"' not in query and not has_field_prefix:
         effective_query = f'"{query}"'
 
     # arXiv enforces ~3s between requests for the public API; below that → 429.
