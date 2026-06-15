@@ -30,6 +30,7 @@ _DEFAULT_TIMEOUT = 25.0
 _FETCH_TIMEOUT = 12.0
 _MAX_FETCH_CONCURRENCY = 6
 _USER_AGENT = "engram-research/0.1 (+self-hosted)"
+_ALLOWED_MEDIA_TYPES = {"text/html", "text/plain"}
 
 
 async def _searxng_query(client: httpx.AsyncClient, base_url: str, q: str,
@@ -57,7 +58,8 @@ async def _fetch_one(client: httpx.AsyncClient, url: str) -> str:
         r = await safe_fetch.get_async(client, url, timeout=_FETCH_TIMEOUT,
                                        headers={"User-Agent": _USER_AGENT})
         r.raise_for_status()
-        if r.status_code == 200 and "text" in r.headers.get("content-type", ""):
+        media_type = r.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if r.status_code == 200 and media_type in _ALLOWED_MEDIA_TYPES:
             return r.text
     except Exception:
         return ""
@@ -94,14 +96,22 @@ async def _search_async(query: str, k: int, max_candidates: int) -> list[WebResu
                 return await _fetch_one(client, url)
 
         usable_raw = [r for r in raw if isinstance(r, dict) and r.get("url")]
-        bodies = await asyncio.gather(*[_fetch_bounded(r["url"]) for r in usable_raw])
+        seen_urls: set[str] = set()
+        deduped_raw: list[dict] = []
+        for r in usable_raw:
+            if r["url"] in seen_urls:
+                continue
+            seen_urls.add(r["url"])
+            deduped_raw.append(r)
+
+        bodies = await asyncio.gather(*[_fetch_bounded(r["url"]) for r in deduped_raw])
 
     extracted = [_extract(b) for b in bodies]
 
     # Build candidate WebResult list. Use snippet as fallback when extraction
     # produced nothing — better to rerank a snippet than to drop the entry.
     candidates: list[WebResult] = []
-    for r, body in zip(usable_raw, extracted):
+    for r, body in zip(deduped_raw, extracted):
         text_for_rerank = body if body else (r.get("content") or "")
         if not text_for_rerank.strip():
             continue
@@ -117,21 +127,12 @@ async def _search_async(query: str, k: int, max_candidates: int) -> list[WebResu
     if not candidates:
         return []
 
-    # URL-level dedup before rerank (cheap; saves rerank budget).
-    seen_urls: set[str] = set()
-    unique: list[WebResult] = []
-    for c in candidates:
-        if c.url in seen_urls:
-            continue
-        seen_urls.add(c.url)
-        unique.append(c)
-
-    scores = rerank.score(query, [c.body or c.snippet for c in unique])
-    for c, s in zip(unique, scores):
+    scores = rerank.score(query, [c.body or c.snippet for c in candidates])
+    for c, s in zip(candidates, scores):
         c.score = s
 
-    unique.sort(key=lambda r: r.score, reverse=True)
-    return unique[:k]
+    candidates.sort(key=lambda r: r.score, reverse=True)
+    return candidates[:k]
 
 
 def search(query: str, *, k: int = 8, max_candidates: int = 20) -> list[WebResult]:
