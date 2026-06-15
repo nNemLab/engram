@@ -6,6 +6,7 @@ are still processed, instead of the loop restarting from the same poison row
 forever and silently dropping everything after it.
 """
 import sqlite3
+import struct
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,11 @@ import sqlite_vec
 from engram.common.db import init_schema
 
 DIM = 4
+
+
+def _vec(*vals):
+    """sqlite-vec compatible vector encoding."""
+    return struct.pack(f"{len(vals)}f", *vals)
 
 
 def _conn(tmp_path):
@@ -67,10 +73,13 @@ def test_run_skips_poison_event_between_good_events(tmp_path, monkeypatch):
     # Patch load_config where the handlers import it.
     monkeypatch.setattr(H, "load_config", lambda: fake_cfg)
     # Mock embedder/chunker so on_ingested doesn't crash on good events.
-    # Give distinct vectors to A and B so the near-dup tombstone path is NOT
-    # exercised — keeps this test focused on poison-skip / cursor-advance.
-    monkeypatch.setattr(H.embedder, "embed_one",
-                        lambda text: b"\x00" * DIM * 4 if "A" in text else b"\xff" * DIM * 4)
+    # Give distinct (orthogonal) vectors to A and B so the near-dup tombstone
+    # path is NOT exercised — keeps this test focused on poison-skip /
+    # cursor-advance.  Vectors must be sqlite-vec compatible (struct-packed).
+    monkeypatch.setattr(
+        H.embedder, "embed_one",
+        lambda text: _vec(1.0, 0.0, 0.0, 0.0) if "A" in text else _vec(0.0, 1.0, 0.0, 0.0),
+    )
     monkeypatch.setattr(H.chunker, "chunk_markdown", lambda *a, **k: ["chunk"])
     monkeypatch.setattr(H.chunker, "embed_prefix", lambda body, n: body)
 
