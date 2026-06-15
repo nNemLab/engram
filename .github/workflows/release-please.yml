@@ -30,27 +30,38 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+      # Find the standing release PR by label: release-please only sets
+      # outputs.pr when it touches the PR this run, so hidden commits (ci/chore)
+      # would skip the sync. The label query always returns the open release PR.
+      - name: Find open release PR
+        id: relpr
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+        run: |
+          branch="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --label 'autorelease: pending' --json headRefName -q '.[0].headRefName // ""')"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
       # Re-lock uv.lock on the release PR so 'uv run --locked' passes.
       - name: Check out the release branch
-        if: ${{ steps.release.outputs.pr }}
+        if: ${{ steps.relpr.outputs.branch != '' }}
         uses: actions/checkout@v6
         with:
-          ref: ${{ fromJson(steps.release.outputs.pr).headBranchName }}
+          ref: ${{ steps.relpr.outputs.branch }}
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
 
       - name: Install uv
-        if: ${{ steps.release.outputs.pr }}
+        if: ${{ steps.relpr.outputs.branch != '' }}
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: '**/uv.lock'
 
       - name: Pin Python 3.11
-        if: ${{ steps.release.outputs.pr }}
+        if: ${{ steps.relpr.outputs.branch != '' }}
         run: uv python install 3.11
 
       - name: Sync uv.lock to the release version
-        if: ${{ steps.release.outputs.pr }}
+        if: ${{ steps.relpr.outputs.branch != '' }}
         run: |
           uv lock
           if git diff --quiet -- uv.lock; then
