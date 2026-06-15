@@ -10,7 +10,6 @@
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
         { "type": "toml", "path": "pyproject.toml", "jsonpath": "$.project.version" },
-        { "type": "toml", "path": "uv.lock", "jsonpath": "$.package[?(@.name=='engram')].version" },
         { "type": "generic", "path": "src/engram/__init__.py" },
         { "type": "json", "path": "engram-plugin/.claude-plugin/plugin.json", "jsonpath": "$.version" }
       ]
