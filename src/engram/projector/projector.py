@@ -6,6 +6,7 @@ manual edits as diffs against the last-rendered version.
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import time
 from datetime import UTC, datetime
@@ -19,6 +20,18 @@ from .renderers import RENDERERS
 logger = logging.getLogger("engram.projector")
 
 CURSOR_KEY = "projector"
+
+
+def _atomic_write(path: Path, body: str) -> None:
+    """Write `body` to `path` atomically via a temp file + `os.replace`.
+
+    The rename is atomic on POSIX, so a watcher in another process observing the
+    vault tree never sees a partially-written file — it sees either the old bytes
+    or the complete new bytes, never a torn intermediate (#96).
+    """
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    tmp.write_text(body)
+    os.replace(tmp, path)
 
 
 def _read_cursor(conn: sqlite3.Connection) -> int:
@@ -49,9 +62,16 @@ def _project_one(conn: sqlite3.Connection, vault: Path, content_hash: str, kind_
     rel_path, body = renderer(row, kind_dir)
     abs_path = vault / rel_path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
-    abs_path.write_text(body)
 
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Commit the rendered_body update BEFORE writing the vault file (#96). The
+    # watcher runs in a SEPARATE process and fires on the file change; its
+    # feedback-loop guard compares the on-disk body against
+    # vault_state.rendered_body. If the file landed first, a watcher read in the
+    # window before this row was durable would see a STALE rendered_body,
+    # mismatch, and fabricate a spurious actor="human" vault_edit. Making the row
+    # committed/visible cross-process first closes that window; the in-process
+    # RLock (#83/#112) cannot serialize across processes.
     conn.execute(
         "INSERT INTO vault_state (vault_path, content_hash, rendered_body, rendered_at) "
         "VALUES (?, ?, ?, ?) "
@@ -60,6 +80,8 @@ def _project_one(conn: sqlite3.Connection, vault: Path, content_hash: str, kind_
         (rel_path, content_hash, body, now),
     )
     conn.execute("UPDATE content SET vault_path = ? WHERE hash = ?", (rel_path, content_hash))
+    conn.commit()
+    _atomic_write(abs_path, body)
 
 
 def _handle_event(conn: sqlite3.Connection, vault: Path, evt: event_log.Event,
@@ -106,8 +128,11 @@ def _handle_event(conn: sqlite3.Connection, vault: Path, evt: event_log.Event,
                 _, body = renderer(new_row, kind_dir)
                 abs_path = vault / old_path
                 abs_path.parent.mkdir(parents=True, exist_ok=True)
-                abs_path.write_text(body)
                 now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+                # Same cross-process ordering as _project_one (#96): repoint and
+                # commit vault_state to the NEW revision's body before the file
+                # write, so the watcher never reads the OLD rendered_body against
+                # the NEW on-disk bytes and misclassifies it as a human edit.
                 conn.execute("DELETE FROM vault_state WHERE content_hash = ?", (hash_old,))
                 conn.execute(
                     "INSERT INTO vault_state (vault_path, content_hash, rendered_body, rendered_at) "
@@ -118,6 +143,8 @@ def _handle_event(conn: sqlite3.Connection, vault: Path, evt: event_log.Event,
                 )
                 conn.execute("UPDATE content SET vault_path = ? WHERE hash = ?",
                              (old_path, hash_new))
+                conn.commit()
+                _atomic_write(abs_path, body)
 
 
 def run() -> None:
