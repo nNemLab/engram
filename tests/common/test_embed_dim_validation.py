@@ -1,7 +1,22 @@
 """Validation of rag.embed_dim before vec0 DDL interpolation (issue #89)."""
 import pytest
 
-from engram.common.config import RagConfig
+from engram.common.config import RagConfig, load_config
+
+
+def _load_via_yaml(tmp_path, monkeypatch, extra: str = "") -> object:
+    """Write a YAML config file and load it through the real loader."""
+    cfg_path = tmp_path / "c.yml"
+    cfg_path.write_text(
+        "paths:\n"
+        f"  root: {tmp_path}\n  vault: {tmp_path}/v\n"
+        f"  playbooks_scratch: {tmp_path}/s\n  playbooks_curated: {tmp_path}/c\n"
+        f"  playbooks_runs: {tmp_path}/r\n  db: {tmp_path}/db.sqlite\n"
+        + extra
+    )
+    monkeypatch.setenv("ENGRAM_CONFIG", str(cfg_path))
+    load_config.cache_clear()
+    return load_config()
 
 
 class TestRagConfigEmbedDimValidation:
@@ -86,3 +101,43 @@ class TestDbInitSchemaGuard:
             "SELECT sql FROM sqlite_master WHERE name = 'embeddings'"
         ).fetchone()
         assert row is None
+
+
+class TestLoadConfigEmbedDimValidation:
+    """Validation fires on the real YAML config-load path (not just direct RagConfig)."""
+
+    def test_valid_config_loads_successfully(self, tmp_path, monkeypatch):
+        """A well-formed config with embed_dim=384 loads without error."""
+        cfg = _load_via_yaml(
+            tmp_path,
+            monkeypatch,
+            "rag:\n  embed_dim: 384\n",
+        )
+        assert cfg.rag.embed_dim == 384
+
+    def test_string_embed_dim_in_yaml_raises(self, tmp_path, monkeypatch):
+        """YAML embed_dim as a string is rejected with ValueError by __post_init__."""
+        with pytest.raises(ValueError, match="embed_dim"):
+            _load_via_yaml(
+                tmp_path,
+                monkeypatch,
+                "rag:\n  embed_dim: \"384\"\n",
+            )
+
+    def test_out_of_range_embed_dim_in_yaml_raises(self, tmp_path, monkeypatch):
+        """YAML embed_dim > 8192 is rejected with ValueError by __post_init__."""
+        with pytest.raises(ValueError, match="embed_dim"):
+            _load_via_yaml(
+                tmp_path,
+                monkeypatch,
+                "rag:\n  embed_dim: 16384\n",
+            )
+
+    def test_zero_embed_dim_in_yaml_raises(self, tmp_path, monkeypatch):
+        """YAML embed_dim == 0 is rejected with ValueError by __post_init__."""
+        with pytest.raises(ValueError, match="embed_dim"):
+            _load_via_yaml(
+                tmp_path,
+                monkeypatch,
+                "rag:\n  embed_dim: 0\n",
+            )
