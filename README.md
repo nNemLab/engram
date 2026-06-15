@@ -41,14 +41,14 @@
 
 ## Highlights
 
-- **Event-log-canonical.** Every state change is an immutable event in an
-  append-only SQLite log. The FTS index, vector index, and Obsidian vault are
-  all projections rebuilt from the database.
+- **Append-only event log.** Every state change is an immutable event in an
+  append-only SQLite log; the FTS index, vector index, and Obsidian vault are
+  projections rebuilt from the database.
 - **Hybrid retrieval.** `sqlite-vec` vector search fused with SQLite FTS5
   full-text search via reciprocal-rank fusion, ranked by source-tier × recency ×
   confidence.
 - **Ambient memory.** An optional Claude Code plugin auto-injects calibrated
-  retrieval on every turn, primes each session, and records what it used — so
+  retrieval on every turn, primes each session, and records the entries it cites — so
   memory shows up without being asked for. See [Ambient memory](#ambient-memory).
 - **Self-hosted & offline-capable.** Runs entirely on your machine. Everything
   curated is local; query, read, and edit with no network. Web search goes
@@ -63,7 +63,7 @@
 
 Engram treats:
 
-- **the event log as canonical** — every state change is an immutable event in SQLite,
+- **the event log as canonical history** — every state change is an immutable event in SQLite,
 - **the Obsidian vault as a projection** — markdown files are a materialized view, not source of truth,
 - **the human and the agent as peers** — the agent writes through the dedup gate, the human edits the vault directly, and both act on the same content.
 
@@ -205,7 +205,7 @@ For auto-injected retrieval on every turn — calibrated so it stays quiet when
 nothing relevant exists — run the grounding daemon (`engram-rag serve`) and
 enable the Claude Code plugin in `engram-plugin/`. The plugin injects relevant
 memory (`UserPromptSubmit`), primes each session (`SessionStart`), and records
-which entries were cited (`Stop`) so they rank higher next time.
+the entries the agent cites (`Stop`) so they rank higher next time.
 
 See **[engram-plugin/README.md](engram-plugin/README.md)** for install options
 and configuration.
@@ -314,15 +314,17 @@ No. Single-user by design — no auth and no concurrency model beyond SQLite's W
 
 **Does my data leave my machine?**
 No. Engram is self-hosted with no cloud backend, no account, and no telemetry.
-Web search runs through your own SearXNG, and outbound fetches are SSRF-guarded.
+Web search runs through your own SearXNG, and server-side fetches of
+agent-supplied URLs are SSRF-guarded.
 
 **Do I need a GPU?**
 No. Embeddings run on CPU by default. The GPU lane is an opt-in install choice,
 not a config flag — see [docs/configuration.md](docs/configuration.md).
 
 **Is it a vector database?**
-No. Retrieval is hybrid `sqlite-vec` + FTS5, RRF-fused and re-ranked. If you need
-a dedicated vector DB at scale, this is the wrong project.
+No. Retrieval is hybrid `sqlite-vec` + FTS5, RRF-fused and scored by confidence,
+source tier, and recency. If you need a dedicated vector DB at scale, this is the
+wrong project.
 
 **Is it a Claude API wrapper?**
 No. Engram exposes tools to a kernel (Claude Code, or any MCP client). The kernel
