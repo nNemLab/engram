@@ -19,7 +19,7 @@ from .prime import prime
 
 
 def build_serve_app(conn: sqlite3.Connection | None = None) -> Starlette:
-    """ASGI app exposing /healthz, /grounding, /prime over a single warm sqlite
+    """ASGI app exposing /healthz, /grounding, /prime, /cite over a single warm sqlite
     connection. Pass `conn` for tests; production opens one from config in the
     lifespan. Requests are serialized (one shared read connection) and the sync
     grounding/prime work runs synchronously under an async lock (fast SQLite
