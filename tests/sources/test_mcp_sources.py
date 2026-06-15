@@ -152,3 +152,48 @@ def test_fetch_now_clears_next_poll_at(conn):
     assert out["triggered"] is True
     after = conn.execute("SELECT next_poll_at FROM sources WHERE id='x'").fetchone()
     assert after["next_poll_at"] is None
+
+
+# ── Issue #90: write tools must verify the row actually matched ──────────────
+
+def test_set_on_missing_id_returns_not_found(conn):
+    """Regression for #90: sources.set on a non-existent id must not crash
+    or return fake success — it must return {"error": "not found"}.
+    """
+    from engram.mcp_server.tools.sources import register
+    tools = register(conn)
+    out = tools["sources.set"]["handler"]({"id": "ghost", "paused": True})
+    assert "error" in out
+    assert out["id"] == "ghost"
+
+
+def test_set_config_merge_on_missing_id_returns_not_found(conn):
+    """Regression for #90: sources.set with config on a non-existent id
+    must check fetchone() before indexing (no TypeError), and return not_found.
+    """
+    from engram.mcp_server.tools.sources import register
+    tools = register(conn)
+    out = tools["sources.set"]["handler"]({"id": "ghost", "config": {"k": "v"}})
+    assert "error" in out
+    assert out["id"] == "ghost"
+
+
+def test_fetch_now_on_missing_id_returns_triggered_false(conn):
+    """fetch_now on an unknown id: triggered=False, no crash.  (Pre-existing
+    rowcount path — no rowcount fix needed here, but a regression guard.)
+    """
+    from engram.mcp_server.tools.sources import register
+    tools = register(conn)
+    out = tools["sources.fetch_now"]["handler"]({"id": "ghost"})
+    assert out["triggered"] is False
+    assert out["id"] == "ghost"
+
+
+def test_remove_on_missing_id(conn):
+    """remove on an unknown id: removed=False, no crash, consistent with
+    existing rowcount-returned boolean.
+    """
+    from engram.mcp_server.tools.sources import register
+    tools = register(conn)
+    out = tools["sources.remove"]["handler"]({"id": "ghost"})
+    assert out["removed"] is False

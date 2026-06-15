@@ -43,10 +43,13 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
 
     def resolve(args: dict[str, Any]) -> dict[str, Any]:
         gid = args["id"]
-        conn.execute(
+        cur = conn.execute(
             "UPDATE goals SET status = 'resolved', updated_at = ? WHERE id = ?",
             (_now(), gid),
         )
+        conn.commit()
+        if cur.rowcount == 0:
+            return {"error": "not found", "id": gid}
         event_log.append(conn, "goal_resolved", {"goal_id": gid}, actor="agent")
         return {"id": gid, "status": "resolved"}
 
