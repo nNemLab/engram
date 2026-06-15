@@ -27,7 +27,7 @@ import sqlite_vec
 
 from .common.time import utcnow_iso
 from .dedup import content_hash
-from .log import canonical_event_hash
+from .log import GENESIS_PREV_HASH, canonical_event_hash
 
 
 def _open(db_path: Path) -> sqlite3.Connection:
@@ -213,7 +213,7 @@ def verify(db_path_or_conn: Path | str | sqlite3.Connection) -> dict[str, Any]:
         if _column_exists(conn, "events", "event_hash"):
             chain_ok = True
             chain_detail = ""
-            expected_prev = ""  # genesis marker for the first chained row
+            expected_prev = GENESIS_PREV_HASH  # genesis marker for the first chained row
             for row in conn.execute(
                 "SELECT id, ts, type, payload, actor, correlation_id, prev_hash, event_hash "
                 "FROM events WHERE event_hash IS NOT NULL ORDER BY id"

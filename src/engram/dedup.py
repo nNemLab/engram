@@ -4,7 +4,6 @@ Outcomes:
   - 'new'        : content is novel, inserted, ingested event emitted
   - 'exact_dup'  : SHA-256 collision, no-op (existing hash returned)
   - 'near_dup'   : embedding cosine > threshold, merged into existing entry
-  - 'contradicts': flagged for human resolution (high overlap + high disagreement signal — stub for now)
   - 'superseded' : same source_url, different bytes — old row marked is_current=0, new row inserted with bumped revision
 """
 from __future__ import annotations
@@ -20,7 +19,7 @@ from .common.config import load_config
 from .common.db import transaction
 from .rag._cosine import l2_to_cosine
 
-Outcome = Literal["new", "exact_dup", "near_dup", "contradicts", "superseded", "supersede_blocked"]
+Outcome = Literal["new", "exact_dup", "near_dup", "superseded", "supersede_blocked"]
 
 
 @dataclass
