@@ -153,53 +153,39 @@ class GitHubRepoAdapter:
         source["cursor"] = json.dumps({"last_sha": head_sha})
 
     async def _tree_paths(self, owner: str, repo: str, sha: str) -> list[str]:
-        """Walk the repository tree recursively, paginating each directory level
-        to avoid the ~1 000-entry truncation limit that the ``recursive=1``
-        endpoint imposes.
+        """Walk the repository tree recursively with one request per subtree.
 
         Returns only blob paths (not dirs, symlinks, or submodules).
         """
         queue: list[tuple[str, str]] = [(sha, "")]   # (tree_sha, prefix)
-        seen_shas: set[str] = set()                   # avoid revisiting dirs
         all_blobs: list[str] = []
 
         while queue:
             tree_sha, prefix = queue.pop()
 
-            # Paginate through ALL entries at this tree level (GitHub caps
-            # each page at ~1 000 dirs/entries).
-            paginate_at: str | None = None  # track pagination loop
-            while True:
-                r = await self._client.get(
-                    f"/repos/{owner}/{repo}/git/trees/{tree_sha}",
+            r = await self._client.get(
+                f"/repos/{owner}/{repo}/git/trees/{tree_sha}",
+            )
+            r.raise_for_status()
+            data = r.json()
+
+            if data.get("truncated"):
+                raise RuntimeError(
+                    "GitHub tree response was truncated; refusing to advance "
+                    "cursor past unseen files"
                 )
-                r.raise_for_status()
-                data = r.json()
 
-                for entry in data.get("tree", []):
-                    if entry["type"] == "blob":
-                        child_path = (
-                            f"{prefix}/{entry['path']}" if prefix else entry["path"]
-                        )
-                        all_blobs.append(child_path)
-                    elif entry["type"] == "tree":
-                        child_path = (
-                            f"{prefix}/{entry['path']}" if prefix else entry["path"]
-                        )
-                        if entry["sha"] not in seen_shas:
-                            seen_shas.add(entry["sha"])
-                            queue.append((entry["sha"], child_path))
-
-                if not data.get("truncated"):
-                    break  # no more pages at this level
-
-                # Paginate within this level: GitHub uses the last entry's
-                # sha as the starting point for the next page.
-                next_sha = data["tree"][-1]["sha"]
-                if next_sha == paginate_at:
-                    break  # already paginated here — avoid infinite loop
-                paginate_at = next_sha
-                tree_sha = next_sha
+            for entry in data.get("tree", []):
+                if entry["type"] == "blob":
+                    child_path = (
+                        f"{prefix}/{entry['path']}" if prefix else entry["path"]
+                    )
+                    all_blobs.append(child_path)
+                elif entry["type"] == "tree":
+                    child_path = (
+                        f"{prefix}/{entry['path']}" if prefix else entry["path"]
+                    )
+                    queue.append((entry["sha"], child_path))
 
         return all_blobs
 

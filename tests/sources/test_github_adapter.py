@@ -171,123 +171,155 @@ def test_next_page_url_parses_link_header():
 
 
 @pytest.mark.asyncio
-async def test_tree_walk_drains_truncated_pages(monkeypatch):
-    """When the tree API returns truncated entries, pagination follows them
-    until no more truncated pages remain, so NO files are skipped."""
+async def test_tree_walk_collects_all_blobs_across_subtrees(monkeypatch):
+    """A normal non-truncated subtree walk returns blobs from every directory."""
     monkeypatch.setenv("GITHUB_TOKEN", "test-token")
-
-    call_count = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
         p = request.url.path
         if p == "/repos/docker/docs/branches/main":
             return httpx.Response(200, json={"commit": {"sha": "head1"}})
         if p == "/repos/docker/docs/git/trees/head1":
-            # Root commit tree: one subdirectory (docs) + root readme
             return httpx.Response(200, text=json.dumps({
                 "sha": "head1",
                 "tree": [
-                    {"path": "docs", "type": "tree", "sha": "docsha"},
                     {"path": "README.md", "type": "blob", "sha": "blob0"},
+                    {"path": "docs", "type": "tree", "sha": "docsha"},
+                    {"path": "guides", "type": "tree", "sha": "guidesha"},
                 ],
                 "truncated": False,
             }), headers={"content-type": "application/json"})
         if p == "/repos/docker/docs/git/trees/docsha":
-            call_count["n"] += 1
-            if call_count["n"] == 1:
-                # First page: truncated, returns 2 dirs + 1 trailing blob
-                return httpx.Response(200, text=json.dumps({
-                    "sha": "docsha",
-                    "tree": [
-                        {"path": "engine", "type": "tree", "sha": "engsha"},
-                        {"path": "setup", "type": "tree", "sha": "setp"},
-                        {"path": "top.txt", "type": "blob", "sha": "blob_top"},
-                    ],
-                    "truncated": True,
-                }), headers={"content-type": "application/json"})
-            else:
-                # Second page (paginated from last entry's sha): more dirs/files
-                return httpx.Response(200, text=json.dumps({
-                    "sha": "docsha",
-                    "tree": [
-                        {"path": "web", "type": "tree", "sha": "webs"},
-                        {"path": "index.html", "type": "blob", "sha": "idx1"},
-                    ],
-                    "truncated": False,
-                }), headers={"content-type": "application/json"})
-        if p == "/repos/docker/docs/git/trees/blob_top":
-            # Pagination cursor that happens to be a blob sha — GitHub still
-            # returns the next batch of entries from the same parent dir.
             return httpx.Response(200, text=json.dumps({
                 "sha": "docsha",
                 "tree": [
-                    {"path": "web", "type": "tree", "sha": "webs"},
-                    {"path": "index.html", "type": "blob", "sha": "idx1"},
+                    {"path": "engine", "type": "tree", "sha": "engsha"},
+                    {"path": "index.md", "type": "blob", "sha": "b1"},
                 ],
                 "truncated": False,
             }), headers={"content-type": "application/json"})
-        if p.startswith("/repos/docker/docs/git/trees/engsha"):
+        if p == "/repos/docker/docs/git/trees/guidesha":
+            return httpx.Response(200, text=json.dumps({
+                "sha": "guidesha",
+                "tree": [
+                    {"path": "intro.md", "type": "blob", "sha": "b2"},
+                ],
+                "truncated": False,
+            }), headers={"content-type": "application/json"})
+        if p == "/repos/docker/docs/git/trees/engsha":
             return httpx.Response(200, text=json.dumps({
                 "sha": "engsha",
                 "tree": [
-                    {"path": "install.md", "type": "blob", "sha": "b1"},
+                    {"path": "install.md", "type": "blob", "sha": "b3"},
                 ],
                 "truncated": False,
             }), headers={"content-type": "application/json"})
-        if p.startswith("/repos/docker/docs/git/trees/setp"):
-            return httpx.Response(200, text=json.dumps({
-                "sha": "setp",
-                "tree": [
-                    {"path": "install.md", "type": "blob", "sha": "b2"},
-                ],
-                "truncated": False,
-            }), headers={"content-type": "application/json"})
-        if p.startswith("/repos/docker/docs/git/trees/webs"):
-            return httpx.Response(200, text=json.dumps({
-                "sha": "webs",
-                "tree": [
-                    {"path": "index.html", "type": "blob", "sha": "b3"},
-                ],
-                "truncated": False,
-            }), headers={"content-type": "application/json"})
-        # Fetch-file endpoints
         if "/contents/README.md" in p:
-            return httpx.Response(200, text="readme body",
-                                  headers={"content-type": "text/plain"})
-        if "/contents/docs/top.txt" in p:
-            return httpx.Response(200, text="top file",
-                                  headers={"content-type": "text/plain"})
+            return httpx.Response(200, text="readme body")
+        if "/contents/docs/index.md" in p:
+            return httpx.Response(200, text="docs index")
         if "/contents/docs/engine/install.md" in p:
-            return httpx.Response(200, text="engine install",
-                                  headers={"content-type": "text/plain"})
-        if "/contents/docs/setup/install.md" in p:
-            return httpx.Response(200, text="setup install",
-                                  headers={"content-type": "text/plain"})
-        if "/contents/docs/web/index.html" in p:
-            return httpx.Response(200, text="web index",
-                                  headers={"content-type": "text/plain"})
-        if "/contents/docs/index.html" in p:
-            return httpx.Response(200, text="index",
-                                  headers={"content-type": "text/plain"})
+            return httpx.Response(200, text="engine install")
+        if "/contents/guides/intro.md" in p:
+            return httpx.Response(200, text="guides intro")
         return httpx.Response(404)
 
-    transport = httpx.MockTransport(handler)
-    adapter = GitHubRepoAdapter(_transport=transport)
-    # Broad include so ALL tree blobs pass the filter
+    adapter = GitHubRepoAdapter(_transport=httpx.MockTransport(handler))
     src = _src(config=json.dumps({"include": ["**"], "branch": "main"}))
+
     cands = [c async for c in adapter.fetch(src)]
-    # Should have fetched README + all blobs from all paginated dirs
+
     paths = sorted(c.source_url for c in cands)
-    expected_urls = sorted([
+    assert paths == sorted([
         "https://github.com/docker/docs/blob/head1/README.md",
         "https://github.com/docker/docs/blob/head1/docs/engine/install.md",
-        "https://github.com/docker/docs/blob/head1/docs/index.html",
-        "https://github.com/docker/docs/blob/head1/docs/setup/install.md",
-        "https://github.com/docker/docs/blob/head1/docs/top.txt",
-        "https://github.com/docker/docs/blob/head1/docs/web/index.html",
+        "https://github.com/docker/docs/blob/head1/docs/index.md",
+        "https://github.com/docker/docs/blob/head1/guides/intro.md",
     ])
-    assert paths == expected_urls
 
+
+@pytest.mark.asyncio
+async def test_tree_walk_raises_when_subtree_response_is_truncated(monkeypatch):
+    """A truncated non-recursive tree response raises instead of dropping files."""
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        p = request.url.path
+        if p == "/repos/docker/docs/branches/main":
+            return httpx.Response(200, json={"commit": {"sha": "head1"}})
+        if p == "/repos/docker/docs/git/trees/head1":
+            return httpx.Response(200, text=json.dumps({
+                "sha": "head1",
+                "tree": [
+                    {"path": "docs", "type": "tree", "sha": "docsha"},
+                ],
+                "truncated": False,
+            }), headers={"content-type": "application/json"})
+        if p == "/repos/docker/docs/git/trees/docsha":
+            return httpx.Response(200, text=json.dumps({
+                "sha": "docsha",
+                "tree": [
+                    {"path": "engine", "type": "tree", "sha": "engsha"},
+                ],
+                "truncated": True,
+            }), headers={"content-type": "application/json"})
+        return httpx.Response(404)
+
+    adapter = GitHubRepoAdapter(_transport=httpx.MockTransport(handler))
+    src = _src(config=json.dumps({"include": ["**"], "branch": "main"}))
+
+    with pytest.raises(RuntimeError, match="truncated"):
+        [c async for c in adapter.fetch(src)]
+
+    assert src["cursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_tree_walk_keeps_distinct_paths_with_same_subtree_sha(monkeypatch):
+    """Two paths pointing at the same subtree sha both keep their files."""
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+
+    shared_calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        p = request.url.path
+        if p == "/repos/docker/docs/branches/main":
+            return httpx.Response(200, json={"commit": {"sha": "head1"}})
+        if p == "/repos/docker/docs/git/trees/head1":
+            return httpx.Response(200, text=json.dumps({
+                "sha": "head1",
+                "tree": [
+                    {"path": "a", "type": "tree", "sha": "shared"},
+                    {"path": "b", "type": "tree", "sha": "shared"},
+                ],
+                "truncated": False,
+            }), headers={"content-type": "application/json"})
+        if p == "/repos/docker/docs/git/trees/shared":
+            shared_calls["n"] += 1
+            return httpx.Response(200, text=json.dumps({
+                "sha": "shared",
+                "tree": [
+                    {"path": "file.txt", "type": "blob", "sha": "blob1"},
+                ],
+                "truncated": False,
+            }), headers={"content-type": "application/json"})
+        if "/contents/a/file.txt" in p:
+            return httpx.Response(200, text="a")
+        if "/contents/b/file.txt" in p:
+            return httpx.Response(200, text="b")
+        return httpx.Response(404)
+
+    adapter = GitHubRepoAdapter(_transport=httpx.MockTransport(handler))
+    src = _src(config=json.dumps({"include": ["**"], "branch": "main"}))
+
+    cands = [c async for c in adapter.fetch(src)]
+
+    assert shared_calls["n"] == 2
+    paths = sorted(c.source_url for c in cands)
+    assert paths == sorted([
+        "https://github.com/docker/docs/blob/head1/a/file.txt",
+        "https://github.com/docker/docs/blob/head1/b/file.txt",
+    ])
 
 
 @pytest.mark.asyncio
