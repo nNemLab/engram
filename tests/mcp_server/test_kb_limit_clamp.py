@@ -76,17 +76,24 @@ def test_limit_exactly_one_over_max_is_clamped(kb_tools):
 
 
 def test_limit_zero_floors_to_one(kb_tools):
+    """Zero limit must be floored to 1 — assert exact count so removing the clamp
+    makes this fail (SQLite with LIMIT 0 returns 0 rows, but without our clamp
+    a bare 0 still passes >= 1; seed 3 so correct floor==1 proves the floor).
+    """
     conn, handler = kb_tools
-    _seed(conn, 5)
+    _seed(conn, 3)  # enough rows that a bare LIMIT would return >1 if unclamped
     out = handler({"limit": 0})
-    assert len(out) >= 1
+    assert len(out) == 1
 
 
 def test_limit_negative_floors_to_one(kb_tools):
+    """Negative limit must be floored to 1 — with 3+ seeded rows, only a floor-to-1
+    yields exactly 1 row. Without the clamp SQLite would return 3 rows.
+    """
     conn, handler = kb_tools
-    _seed(conn, 5)
+    _seed(conn, 3)
     out = handler({"limit": -10})
-    assert len(out) >= 1
+    assert len(out) == 1
 
 
 # --- normal passthrough ---
@@ -113,3 +120,28 @@ def test_no_limit_arg_respects_seed_size(kb_tools):
     _seed(conn, 5)
     out = handler({})
     assert len(out) == 5
+
+
+def test_non_numeric_limit_raises_value_error():
+    """int(args.get('limit', 50)) is explicit — non-numeric strings raise ValueError.
+    This is intentional: callers must supply valid integers.
+    """
+    import sqlite3
+
+    from engram.mcp_server.tools.kb import register
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    _apply_schema(conn)
+    from types import SimpleNamespace
+
+    from engram import dedup as dedup_mod
+    orig_load_config = dedup_mod.load_config
+    dedup_mod.load_config = lambda: SimpleNamespace(rag=SimpleNamespace(near_dup_threshold=0.92))
+    try:
+        tools = register(conn)
+        handler = tools["kb.list"]["handler"]
+        with pytest.raises(ValueError):
+            handler({"limit": "abc"})
+    finally:
+        dedup_mod.load_config = orig_load_config
