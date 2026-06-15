@@ -8,6 +8,37 @@ From v0.2.1 onward, releases are automated by
 [Conventional Commits](https://www.conventionalcommits.org/); entries below
 v0.2.1 were authored by hand.
 
+## [0.2.4](https://github.com/nNemLab/engram/compare/v0.2.3...v0.2.4) (2026-06-15)
+
+
+### Features
+
+* **rag:** add tunable recency scoring to hybrid ranker ([#131](https://github.com/nNemLab/engram/issues/131)) ([db83a90](https://github.com/nNemLab/engram/commit/db83a90d5f31ce98f55b8aaa183a5ff5374402f8)), closes [#73](https://github.com/nNemLab/engram/issues/73)
+* **reactor:** retry budget + dead-letter for deterministically-failing handlers ([#132](https://github.com/nNemLab/engram/issues/132)) ([296b8e0](https://github.com/nNemLab/engram/commit/296b8e0623d80cb5c233f45a55934c9562023c4e))
+
+
+### Bug Fixes
+
+* close DB connections, httpx clients, and debouncer timers on shutdown ([#141](https://github.com/nNemLab/engram/issues/141)) ([f0cb6e9](https://github.com/nNemLab/engram/commit/f0cb6e9cfebb5c35ab0e57fe017e448aa109d296)), closes [#92](https://github.com/nNemLab/engram/issues/92) [#138](https://github.com/nNemLab/engram/issues/138)
+* **db:** atomic multi-statement writes + serialized shared SQLite connection ([#112](https://github.com/nNemLab/engram/issues/112)) ([15bbb06](https://github.com/nNemLab/engram/commit/15bbb06396c4f8d6db9d879f46aba07533678ff5))
+* **dedup:** filter tombstoned embeddings and delete on tombstone ([#136](https://github.com/nNemLab/engram/issues/136)) ([e7d163a](https://github.com/nNemLab/engram/commit/e7d163a9e1eae02df1703ff56422f3ec819f2d38))
+* harden maintenance restore safety ([#124](https://github.com/nNemLab/engram/issues/124)) ([3eacef5](https://github.com/nNemLab/engram/commit/3eacef5e29b03b4b6225910c972a6d02e6a35915)), closes [#94](https://github.com/nNemLab/engram/issues/94)
+* **kb:** clamp list limit to MAX_LIMIT (100) and floor at 1 ([#121](https://github.com/nNemLab/engram/issues/121)) ([77179f6](https://github.com/nNemLab/engram/commit/77179f658bed283cb36b1b7c5bc7b011c2d589e9)), closes [#118](https://github.com/nNemLab/engram/issues/118)
+* **mcp:** verify write rowcount and fetchone in sources/set and goals/resolve ([#120](https://github.com/nNemLab/engram/issues/120)) ([ab3d609](https://github.com/nNemLab/engram/commit/ab3d609d8b818a2fee9288e46268da6fb21bf075)), closes [#90](https://github.com/nNemLab/engram/issues/90)
+* **playbook:** process-group cleanup on timeout + consistent early-out shape ([#129](https://github.com/nNemLab/engram/issues/129)) ([2c1e654](https://github.com/nNemLab/engram/commit/2c1e65487650738bd71c58aad5fdf644a9d0276d)), closes [#102](https://github.com/nNemLab/engram/issues/102)
+* **poller:** cap Retry-After backoff and poll due sources concurrently ([#126](https://github.com/nNemLab/engram/issues/126)) ([123c1cd](https://github.com/nNemLab/engram/commit/123c1cd4688d581d8a871fd4769d64a9a1cd61d2)), closes [#87](https://github.com/nNemLab/engram/issues/87)
+* **poller:** feed gate-path failures into circuit breaker escalation ([#135](https://github.com/nNemLab/engram/issues/135)) ([b1e0e08](https://github.com/nNemLab/engram/commit/b1e0e086c706ed7289a8f079f387fd68df6e6840)), closes [#97](https://github.com/nNemLab/engram/issues/97)
+* **projector:** commit rendered_body before writing vault file ([#128](https://github.com/nNemLab/engram/issues/128)) ([bb747fd](https://github.com/nNemLab/engram/commit/bb747fdcfc0d62fcf0e960c68b98d0ddfb3b4a79)), closes [#96](https://github.com/nNemLab/engram/issues/96)
+* **reactor:** stop cursor on handler failure to prevent silent data loss ([#111](https://github.com/nNemLab/engram/issues/111)) ([0af1a11](https://github.com/nNemLab/engram/commit/0af1a116c384568821c704ccb26c396e89d0f31c))
+* **research:** harden web and arxiv fetch robustness ([#123](https://github.com/nNemLab/engram/issues/123)) ([cb23a9e](https://github.com/nNemLab/engram/commit/cb23a9ecdcc94992059783d537e505dcdf874db9)), closes [#93](https://github.com/nNemLab/engram/issues/93)
+* **research:** pin validated IP to connection to close DNS-rebinding TOCTOU ([#127](https://github.com/nNemLab/engram/issues/127)) ([600d46b](https://github.com/nNemLab/engram/commit/600d46b27d255983e38dfeb30d01add9d1084227)), closes [#95](https://github.com/nNemLab/engram/issues/95)
+* **research:** reject non-HTML content-types in ingest_url ([#122](https://github.com/nNemLab/engram/issues/122)) ([474dd36](https://github.com/nNemLab/engram/commit/474dd360a4162ea543e36b6204be80fbc9d58cb1)), closes [#77](https://github.com/nNemLab/engram/issues/77)
+
+
+### Performance Improvements
+
+* **db:** narrow DB lock to DB-touching regions so non-DB tool work runs concurrently ([#130](https://github.com/nNemLab/engram/issues/130)) ([0531216](https://github.com/nNemLab/engram/commit/05312163cbce24f2ff59b565e8ec10e8171db1bb)), closes [#113](https://github.com/nNemLab/engram/issues/113)
+
 ## [0.2.3](https://github.com/nNemLab/engram/compare/v0.2.2...v0.2.3) (2026-06-15)
 
 
