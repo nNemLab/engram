@@ -1,6 +1,7 @@
 """SQLite connection. Loads sqlite-vec, applies schema, ensures vec0 table."""
 from __future__ import annotations
 
+import fcntl
 import os
 import re
 import sqlite3
@@ -264,15 +265,91 @@ def init_schema(conn: sqlite3.Connection, embed_dim: int = 384) -> None:
     check_compatibility(conn, embed_dim)
 
 
-def _apply_pending_migrations(conn: sqlite3.Connection) -> None:
-    """Apply any schema/NNN_*.sql files past the highest applied version.
+# Serializes migration apply between threads of THIS process when the database
+# has no on-disk file to flock (an in-memory/temp DB). For a real file the
+# cross-process flock below already excludes concurrent threads too (each open()
+# is a distinct open file description), so this is only the in-memory fallback.
+_MIGRATION_THREAD_LOCK = threading.Lock()
 
-    Migration files are NOT idempotent in general (SQLite has no `ADD COLUMN
-    IF NOT EXISTS`), so we gate strictly on the schema_version table. Each
-    migration is expected to insert its own version row.
+
+def _split_sql_statements(script: str) -> list[str]:
+    """Split a migration script into individually-executable statements.
+
+    `conn.executescript` implicitly COMMITs before it runs and wraps nothing, so
+    a multi-statement migration that fails partway leaves the earlier statements
+    committed (#160). To apply a migration atomically we run each statement via
+    `conn.execute` inside one explicit BEGIN/COMMIT, which means splitting the
+    script on statement boundaries ourselves.
+
+    The splitter is a small character scanner that tracks the three contexts in
+    which a `;` is NOT a statement terminator: inside a single-quoted string
+    literal (with `''` escaping), inside a `-- ...` line comment, and inside a
+    `/* ... */` block comment. Each statement's text (its comments included) is
+    preserved verbatim and `strip`ped; fragments with no SQL token -- a leading
+    license header, the whitespace after the final `;` -- are dropped so they
+    are never handed to `execute`.
     """
-    row = conn.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
-    current = int(row["v"] or 0) if row else 0
+    statements: list[str] = []
+    buf: list[str] = []
+    has_sql = False  # did this fragment contain a non-comment, non-space token?
+    in_string = False
+    i = 0
+    n = len(script)
+    while i < n:
+        ch = script[i]
+        nxt = script[i + 1] if i + 1 < n else ""
+        if in_string:
+            buf.append(ch)
+            if ch == "'":
+                if nxt == "'":  # doubled quote: an escaped ', not the end
+                    buf.append(nxt)
+                    i += 2
+                    continue
+                in_string = False
+            i += 1
+            continue
+        if ch == "-" and nxt == "-":  # line comment to end of line
+            while i < n and script[i] != "\n":
+                buf.append(script[i])
+                i += 1
+            continue
+        if ch == "/" and nxt == "*":  # block comment to closing */
+            buf.append(ch)
+            buf.append(nxt)
+            i += 2
+            while i < n and not (script[i] == "*" and i + 1 < n and script[i + 1] == "/"):
+                buf.append(script[i])
+                i += 1
+            if i < n:
+                buf.append("*")
+                buf.append("/")
+                i += 2
+            continue
+        if ch == "'":
+            in_string = True
+            has_sql = True
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == ";":
+            if has_sql:
+                statements.append(("".join(buf) + ";").strip())
+            buf = []
+            has_sql = False
+            i += 1
+            continue
+        if not ch.isspace():
+            has_sql = True
+        buf.append(ch)
+        i += 1
+    if has_sql:  # trailing statement with no terminating semicolon
+        statements.append("".join(buf).strip())
+    return statements
+
+
+def _pending_migrations(conn: sqlite3.Connection) -> list[tuple[int, Path]]:
+    """Migration files whose version is past the highest applied, sorted ascending."""
+    current = _db_schema_version(conn)
     pending: list[tuple[int, Path]] = []
     for p in sorted(SCHEMA_DIR.glob("[0-9][0-9][0-9]_*.sql")):
         try:
@@ -281,8 +358,87 @@ def _apply_pending_migrations(conn: sqlite3.Connection) -> None:
             continue
         if version > current:
             pending.append((version, p))
-    for version, path in pending:
-        conn.executescript(path.read_text())
+    return pending
+
+
+def _apply_one_migration(conn: sqlite3.Connection, path: Path) -> None:
+    """Apply one migration file atomically: all statements + its version row, or none.
+
+    Replaces `executescript` (which auto-commits each statement) with explicit
+    statement-by-statement execution inside one BEGIN/COMMIT, ROLLBACK on any
+    error. The migration's own `INSERT ... schema_version` is part of the same
+    transaction, so version and schema advance together or not at all (#160).
+    """
+    statements = _split_sql_statements(path.read_text())
+    conn.execute("BEGIN")
+    try:
+        for stmt in statements:
+            conn.execute(stmt)
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
+
+
+def _migration_lock_path(conn: sqlite3.Connection) -> Path | None:
+    """Lock-file path beside the main database file, or None for an in-memory DB."""
+    row = conn.execute("PRAGMA database_list").fetchone()
+    main_file = row[2] if row else ""  # (seq, name, file)
+    if not main_file:  # :memory: / temp DB -- no cross-process file to guard
+        return None
+    return Path(main_file + ".migrate.lock")
+
+
+@contextmanager
+def _migration_lock(conn: sqlite3.Connection) -> Iterator[None]:
+    """Hold an exclusive lock guarding migration apply across processes (#160).
+
+    `connect`/`get_connection` run `_apply_pending_migrations` on EVERY open, and
+    8+ daemon entry points open connections at startup. On the first launch
+    after a version bump they all see the same pending migration and would race
+    to apply it -- the non-idempotent `ALTER ... ADD COLUMN` then fails with
+    'duplicate column' for every loser. An exclusive `flock` on a lock file
+    beside the database serializes the apply across processes (and across this
+    process's threads, since each open file description flocks independently);
+    callers re-read `schema_version` inside the lock so the loser applies
+    nothing. In-memory/temp DBs have no file -- fall back to a process-wide
+    thread lock (such DBs are never shared across processes anyway).
+    """
+    path = _migration_lock_path(conn)
+    if path is None:
+        with _MIGRATION_THREAD_LOCK:
+            yield
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _apply_pending_migrations(conn: sqlite3.Connection) -> None:
+    """Apply any schema/NNN_*.sql files past the highest applied version.
+
+    Migration files are NOT idempotent in general (SQLite has no `ADD COLUMN
+    IF NOT EXISTS`), so we gate strictly on the schema_version table; each
+    migration inserts its own version row. Two invariants (#160):
+
+    * **Atomic** -- each file applies all-or-nothing (`_apply_one_migration`).
+    * **Cross-process exclusive** -- the version check + apply runs under an
+      exclusive lock, with `schema_version` RE-READ inside the lock, so racing
+      opens never double-apply the same migration.
+    """
+    # Cheap pre-check outside the lock: skip the lock entirely on the common
+    # already-migrated path. Re-checked under the lock below, so a process that
+    # passes this check but loses the race still applies nothing.
+    if not _pending_migrations(conn):
+        return
+    with _migration_lock(conn):
+        for _version, path in _pending_migrations(conn):
+            _apply_one_migration(conn, path)
 
 
 def _code_schema_version() -> int:
