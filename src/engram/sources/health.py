@@ -78,7 +78,7 @@ def source_health(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "FROM content WHERE source_id = ?",
             (d["id"],),
         ).fetchone()
-        content_total = counts["total"] or 0
+        content_total = counts["total"]
         content_current = counts["current"] or 0
         last_new_content_at = counts["last_new"]
 
