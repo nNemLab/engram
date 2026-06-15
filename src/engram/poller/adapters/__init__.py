@@ -38,42 +38,33 @@ class Adapter(Protocol):
 def _glob_to_regex(pattern: str) -> re.Pattern[str]:
     """Translate a shell glob (with * / ? / **) to a regex.
 
-    *  matches within one path segment  →  [^/]*
-    ** matches across any number of segments (including zero)  →  .*
-    ?  matches a single character  →  [^/]  (single-char, no slash)
-    Everything else is literal-escaped.
+    **/  (double-star followed by slash) -> (?:.*/)?   — zero or more full segments
+    **   (trailing double-star)           -> .*          — anything
+    *                                -> [^/]*           — within one segment
+    ?                                -> [^/]            — one non-slash char
+    any other char                   -> regex-escaped   — literal match
     """
-    segments = pattern.split("/")
-    regex_parts: list[str] = []
-    for i, seg in enumerate(segments):
-        parts: list[str] = []
-        j = 0
-        was_double_star = False
-        while j < len(seg):
-            if seg[j] == "*":
-                if j + 1 < len(seg) and seg[j + 1] == "*":
-                    parts.append(".*")
-                    j += 2
-                    was_double_star = True
-                else:
-                    parts.append("[^/]*")
-                    j += 1
-                    was_double_star = False
-            elif seg[j] == "?":
-                parts.append("[^/]")
-                j += 1
-                was_double_star = False
+    out: list[str] = []
+    i = 0
+    n = len(pattern)
+    while i < n:
+        if pattern[i] == "*" and i + 1 < n and pattern[i + 1] == "*":
+            if i + 2 < n and pattern[i + 2] == "/":
+                out.append("(?:.*/)?")
+                i += 3  # skip "**/"
             else:
-                parts.append(re.escape(seg[j]))
-                j += 1
-                was_double_star = False
-        regex_parts.append("".join(parts))
-        # Only add a literal '/' between segments if the last part wasn't "**"
-        # — "**" is zero-or-more-segments and its ".*" already spans slashes.
-        if i < len(segments) - 1 and not was_double_star:
-            regex_parts.append("/")
-    regex = "^" + "".join(regex_parts) + "$"
-    return re.compile(regex)
+                out.append(".*")
+                i += 2  # trailing "**"
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("^" + "".join(out) + "$")
 
 
 def matches_globs(path: str, include: list[str], exclude: list[str]) -> bool:

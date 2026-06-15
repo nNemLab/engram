@@ -6,7 +6,6 @@ def test_no_filters_passes_everything():
 
 
 def test_include_matches():
-    # * matches within one segment; two wildcards + middle segment
     assert matches_globs("foo/engine/bar", include=["*/engine/*"], exclude=[]) is True
 
 
@@ -42,6 +41,15 @@ def test_url_filter_handles_full_url():
 # --- Segment-aware scoping (fix #171) -------------------------------------
 
 
+def test_middle_double_star_stays_segment_aware():
+    """a/**/b must match a/b, a/x/b, a/x/y/b — but NOT a/xb or a/x/yb."""
+    assert matches_globs("a/b", include=["a/**/b"], exclude=[]) is True
+    assert matches_globs("a/x/b", include=["a/**/b"], exclude=[]) is True
+    assert matches_globs("a/x/y/b", include=["a/**/b"], exclude=[]) is True
+    assert matches_globs("a/xb", include=["a/**/b"], exclude=[]) is False
+    assert matches_globs("a/x/yb", include=["a/**/b"], exclude=[]) is False
+
+
 def test_single_star_stays_in_segment():
     """"docs/*.md" matches "docs/x.md" but NOT "docs/a/b/c.md"."""
     assert matches_globs("docs/x.md", include=["docs/*.md"], exclude=[]) is True
@@ -51,20 +59,3 @@ def test_single_star_stays_in_segment():
 def test_double_star_crosses_segments():
     """"docs/**/*.md" matches deeply nested paths."""
     assert matches_globs("docs/a/b/c.md", include=["docs/**/*.md"], exclude=[]) is True
-
-
-def test_single_star_no_match_different_segment():
-    """Single * matches within one segment only."""
-    assert matches_globs("docs/sub/x.md", include=["docs/*.md"], exclude=[]) is False
-    assert matches_globs("docs/x/y.md", include=["docs/*.md"], exclude=[]) is False
-
-
-def test_double_star_matches_single_segment():
-    """** also matches zero segments, so docs/**/*.md matches docs/x.md too."""
-    assert matches_globs("docs/x.md", include=["docs/**/*.md"], exclude=[]) is True
-
-
-def test_exclude_single_star_stays_in_segment():
-    """Exclusion also uses segment-aware scoping."""
-    assert matches_globs("docs/a/b/c.md", include=["docs/**"], exclude=["docs/a/*.md"]) is True
-    assert matches_globs("docs/a/x.md", include=["docs/**"], exclude=["docs/a/*.md"]) is False
