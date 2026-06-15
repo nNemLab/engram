@@ -11,6 +11,7 @@ from engram.research.safe_fetch import UnsafeURLError, assert_public_url
 # Public IP literal (example.com's documentation range) — only ever hit a
 # MockTransport, never the network.
 PUBLIC = "93.184.216.34"
+PUBLIC2 = "93.184.216.35"
 
 
 # --- assert_public_url -------------------------------------------------------
@@ -244,6 +245,51 @@ async def test_async_get_blocks_redirect_to_private_hostname(monkeypatch):
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(UnsafeURLError):
             await safe_fetch.get_async(client, "http://good.example/")
+
+
+async def test_async_get_tries_next_validated_ip_on_connect_failure(monkeypatch):
+    def fake_getaddrinfo(host, port, *a, **kw):
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (PUBLIC, port or 80)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (PUBLIC2, port or 80)),
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    seen_hosts: list[str] = []
+
+    def handler(request):
+        seen_hosts.append(request.url.host)
+        if request.url.host == PUBLIC:
+            raise httpx.ConnectError("first IP failed", request=request)
+        return httpx.Response(200, text="ok")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        r = await safe_fetch.get_async(client, "http://retry.example/")
+
+    assert r.status_code == 200
+    assert seen_hosts == [PUBLIC, PUBLIC2]
+
+
+def test_sync_get_tries_next_validated_ip_on_connect_failure(monkeypatch):
+    def fake_getaddrinfo(host, port, *a, **kw):
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (PUBLIC, port or 80)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (PUBLIC2, port or 80)),
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    seen_hosts: list[str] = []
+
+    def handler(request):
+        seen_hosts.append(request.url.host)
+        if request.url.host == PUBLIC:
+            raise httpx.ConnectError("first IP failed", request=request)
+        return httpx.Response(200, text="ok")
+
+    r = safe_fetch.get("http://retry.example/", transport=httpx.MockTransport(handler))
+
+    assert r.status_code == 200
+    assert seen_hosts == [PUBLIC, PUBLIC2]
 
 
 def test_sync_get_follows_public_hostname_redirect(monkeypatch):
