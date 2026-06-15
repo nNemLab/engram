@@ -48,3 +48,22 @@ def test_record_cited_returns_fresh_count(tmp_path):
     conn = fresh_conn(tmp_path)
     assert record_cited(conn, ["h1", "h2"], query="x", turn_id="t1") == 2
     assert record_cited(conn, ["h1", "h3"], query="x", turn_id="t1") == 1  # h1 deduped
+
+
+def test_rebuild_usage_skips_corrupt_payloads(tmp_path):
+    """A corrupt (non-JSON) event row is skipped with a warning; valid rows still process."""
+    from engram.rag.usage import rebuild_usage
+    conn = fresh_conn(tmp_path)
+    # Insert a valid cited event (h1) plus a corrupt payload row (h_bad is garbage text).
+    from engram.rag.usage import record_cited
+    record_cited(conn, ["h1"], query="good")
+    conn.execute(
+        "INSERT INTO events (type, payload, ts) VALUES ("
+        "'cited', 'NOT-JSON', '2026-01-01T00:00:00.000Z')"
+    )
+    record_cited(conn, ["h2"], query="also good")
+    # Corrupt row must not raise; valid rows must still be counted.
+    rebuild_usage(conn)
+    rows = {r["content_hash"]: r["use_count"]
+            for r in conn.execute("SELECT content_hash, use_count FROM content_usage")}
+    assert rows == {"h1": 1, "h2": 1}
