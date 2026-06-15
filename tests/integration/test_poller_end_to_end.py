@@ -14,7 +14,7 @@ FIX = REPO / "tests" / "fixtures"
 
 
 def _apply(conn):
-    for fn in ("001_initial.sql", "002_sources_and_revisions.sql"):
+    for fn in sorted(p.name for p in (REPO / "schema").glob("[0-9][0-9][0-9]_*.sql")):
         conn.executescript((REPO / "schema" / fn).read_text())
 
 
