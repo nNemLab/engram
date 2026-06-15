@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import re
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -36,14 +37,36 @@ Outcome = Literal[
 # constraint error still surfaces rather than spinning forever.
 _MAX_GATE_RETRIES = 8
 
+# Test hook: invoked (when set) each time `gate` retries after losing a write
+# race, so tests can prove the retry path actually fired. None in production.
+_on_gate_retry: Callable[[], None] | None = None
+
 
 class _SupersedeAbort(RuntimeError):
     """Internal: roll back a resolve_supersede transaction and surface an error dict."""
 
 
-def _is_unique_violation(exc: sqlite3.IntegrityError) -> bool:
-    """True for a UNIQUE-constraint failure (the one-current-per-url index backstop)."""
-    return "unique constraint" in str(exc).lower()
+class _GateRetry(RuntimeError):
+    """Internal: roll back this `_gate_once` attempt and re-resolve from fresh state.
+
+    Raised when our content hash already exists by insert time (a concurrent writer
+    committed it after this transaction's in-snapshot reads). The in-snapshot
+    decision is then stale -- the pre-existing row may belong to a DIFFERENT
+    source_url -- so we must reclassify (exact_dup / resurrection / a clean
+    supersede on the now-current row) rather than commit a half-applied swap.
+    """
+
+
+def _is_one_current_violation(exc: sqlite3.IntegrityError) -> bool:
+    """True only for the one-current-per-source_url backstop.
+
+    `idx_content_one_current_per_url` is the sole UNIQUE constraint on
+    `content.source_url`, which SQLite reports as
+    ``UNIQUE constraint failed: content.source_url``. Matching that exact text
+    keeps unrelated UNIQUE failures from spinning the whole retry budget -- they
+    propagate immediately.
+    """
+    return "unique constraint failed: content.source_url" in str(exc).lower()
 
 
 def _is_locked_error(exc: sqlite3.OperationalError) -> bool:
@@ -337,16 +360,31 @@ def gate(
                 kind=kind, actor=actor, correlation_id=correlation_id,
                 embedding=embedding, source_id=source_id,
             )
+        except _GateRetry:
+            # Our in-snapshot decision went stale (the hash now exists, possibly for
+            # another source_url) or the invariant guard tripped; `transaction`
+            # already rolled this attempt back. Re-read fresh state and reclassify.
+            if attempt < _MAX_GATE_RETRIES - 1:
+                if _on_gate_retry is not None:
+                    _on_gate_retry()
+                continue
+            raise RuntimeError(
+                "gate: content write could not be resolved after "
+                f"{_MAX_GATE_RETRIES} contention retries"
+            ) from None
         except (sqlite3.IntegrityError, sqlite3.OperationalError) as exc:
             retryable = (
-                isinstance(exc, sqlite3.IntegrityError) and _is_unique_violation(exc)
+                isinstance(exc, sqlite3.IntegrityError) and _is_one_current_violation(exc)
             ) or (
                 isinstance(exc, sqlite3.OperationalError) and _is_locked_error(exc)
             )
             if retryable and attempt < _MAX_GATE_RETRIES - 1:
-                # A concurrent writer beat us; `transaction` already rolled our
-                # attempt back. Loop to re-read the now-current state and resolve
-                # as a supersede / exact_dup rather than racing or crashing (#153).
+                # A concurrent writer beat us to the one-current-per-url backstop or
+                # invalidated our WAL snapshot; `transaction` already rolled our
+                # attempt back. Loop to re-read the now-current state and resolve as a
+                # supersede / exact_dup rather than racing or crashing (#153).
+                if _on_gate_retry is not None:
+                    _on_gate_retry()
                 continue
             raise
     # Unreachable: the final attempt above either returns or re-raises.
@@ -446,11 +484,20 @@ def _gate_once(
                 #   2. demote the old current row (and point it at the new hash);
                 #   3. promote the new revision to current -> exactly one current row.
                 # All atomic (#83/#152): a failure ROLLs BACK to one current row.
-                insert_content(
+                inserted = insert_content(
                     conn, body=body, title=title, source_url=source_url,
                     source_tier=source_tier, confidence=confidence, ttl_days=ttl_days,
                     kind=kind, revision=new_revision, is_current=0, source_id=source_id,
                 )
+                if not inserted:
+                    # The hash already exists -- a concurrent writer committed it
+                    # (possibly for a DIFFERENT source_url, or NULL) after our
+                    # in-snapshot `existing`/`live` reads. Demoting `live` and then
+                    # promoting `WHERE hash = h` would promote a row that may not
+                    # belong to THIS source_url, leaving it with ZERO current rows.
+                    # Roll back and re-resolve instead (#153): the fresh re-read
+                    # reclassifies as exact_dup / resurrection / a clean supersede.
+                    raise _GateRetry()
                 conn.execute(
                     "UPDATE content SET is_current = 0, superseded_by = ? WHERE hash = ?",
                     (h, live["hash"]),
@@ -458,6 +505,16 @@ def _gate_once(
                 conn.execute(
                     "UPDATE content SET is_current = 1 WHERE hash = ?", (h,)
                 )
+                # Invariant guard (#153): this source_url must end with EXACTLY ONE
+                # current row -- never zero, never two. If a concurrent change slipped
+                # past, roll back and retry rather than commit a broken state.
+                n_current = conn.execute(
+                    "SELECT COUNT(*) FROM content "
+                    "WHERE source_url = ? AND is_current = 1 AND tombstoned = 0",
+                    (source_url,),
+                ).fetchone()[0]
+                if n_current != 1:
+                    raise _GateRetry()
                 event_log.append(
                     conn, "superseded",
                     {

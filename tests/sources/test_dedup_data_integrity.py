@@ -228,6 +228,90 @@ def test_concurrent_supersede_resolves_to_one_current(tmp_path, monkeypatch):
     check.close()
 
 
+def test_supersede_insert_ignored_does_not_zero_out_source_url(conn, monkeypatch):
+    """BLOCKING: in the supersede path, if `insert_content` reports it did NOT
+    insert our row (its hash already exists -- a concurrent writer committed it,
+    possibly for a DIFFERENT source_url), the gate must NOT blindly demote-old +
+    promote-by-hash. Doing so would leave THIS source_url with ZERO current rows
+    (and could promote a row that belongs to another source_url). The fix re-
+    resolves from fresh state instead, so the source_url always ends with EXACTLY
+    one current row.
+
+    This drives that branch deterministically by making the first supersede insert
+    report `False` (the WAL snapshot rules make the literal cross-source_url commit
+    intercept itself via BUSY_SNAPSHOT, so we simulate the report directly). It is
+    a regression guard: WITHOUT the `if not inserted: re-resolve` check, the demote
+    then references a hash that was never inserted and the swap fails outright; WITH
+    it, the gate retries and completes cleanly with one current row.
+    """
+    url_a = "https://example.com/A"
+    live_a = content_hash("old body for A")
+    conn.execute(
+        "INSERT INTO content (hash, body, source_url, source_tier, kind, revision, is_current) "
+        "VALUES (?, 'old body for A', ?, 'vendor-doc', 'research', 1, 1)",
+        (live_a, url_a),
+    )
+
+    new_body = "fresh body written to A"
+    h = content_hash(new_body)
+
+    retries = {"n": 0}
+    monkeypatch.setattr(
+        dedup, "_on_gate_retry", lambda: retries.__setitem__("n", retries["n"] + 1)
+    )
+
+    # First supersede insert reports it was ignored (hash already exists); later
+    # calls delegate to the real insert so the retry can complete.
+    real_insert = dedup.insert_content
+    calls = {"n": 0}
+
+    def fake_insert(c, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return False  # simulate INSERT OR IGNORE no-op'ing on a pre-existing hash
+        return real_insert(c, **kwargs)
+
+    monkeypatch.setattr(dedup, "insert_content", fake_insert)
+
+    result = dedup.gate(conn, body=new_body, source_url=url_a, kind="research",
+                        source_tier="vendor-doc")
+
+    # The contention-retry path fired (deterministic proof, not timing-based).
+    assert retries["n"] >= 1, "the contention-retry path did not fire"
+    # The gate re-resolved and completed cleanly rather than erroring or zeroing out.
+    assert result.outcome == "superseded"
+    # The invariant holds: EXACTLY one current row for the source_url, never zero.
+    current_a = _current(conn, url_a)
+    assert len(current_a) == 1, f"source_url A must keep exactly one current row, got {len(current_a)}"
+    assert current_a[0]["hash"] == h
+    # No hash was promoted under the wrong source_url -- the new current row is the
+    # one we actually wrote for url_a, and the old row was demoted, not orphaned.
+    assert conn.execute(
+        "SELECT source_url FROM content WHERE hash = ?", (h,)
+    ).fetchone()["source_url"] == url_a
+    old = conn.execute(
+        "SELECT is_current, superseded_by FROM content WHERE hash = ?", (live_a,)
+    ).fetchone()
+    assert old["is_current"] == 0
+    assert old["superseded_by"] == h
+
+
+def test_supersede_path_invariant_one_current_after_normal_swap(conn):
+    """Companion to the blocking case: the normal (uncontended) supersede leaves
+    exactly one current row and emits the event -- the invariant guard does not
+    interfere with the happy path."""
+    url = "https://example.com/normal"
+    dedup.gate(conn, body="rev one", source_url=url, kind="research", source_tier="vendor-doc")
+    r2 = dedup.gate(conn, body="rev two", source_url=url, kind="research", source_tier="vendor-doc")
+    assert r2.outcome == "superseded"
+    current = _current(conn, url)
+    assert len(current) == 1
+    assert current[0]["hash"] == r2.hash
+    assert conn.execute(
+        "SELECT COUNT(*) FROM events WHERE type = 'superseded'"
+    ).fetchone()[0] == 1
+
+
 # --- #153: resolve_supersede must never leave zero current rows -------------
 
 
