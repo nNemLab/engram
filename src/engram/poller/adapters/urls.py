@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
 
 import httpx
 import trafilatura
@@ -80,8 +79,6 @@ class UrlsAdapter:
                 source_url=url,
                 body=extracted,
                 title=title_str,
-                fetched_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                metadata={"etag": result.etag, "content_type": result.content_type},
             )
             new_cache[url] = HTTPCacheEntry(etag=result.etag, last_modified=result.last_modified)
 

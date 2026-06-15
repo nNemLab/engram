@@ -52,6 +52,8 @@ def _classify_error(exc: Exception) -> tuple[bool, str]:
 
 async def poll_one(conn: sqlite3.Connection, source: dict[str, Any]) -> dict[str, int]:
     """Poll one source. Returns {ingested, superseded, exact_dup, blocked, errors, candidates_seen}."""
+    # poll_one expects an autocommit sqlite connection (isolation_level=None);
+    # without explicit conn.commit(), non-autocommit callers must commit/close.
     adapter = ADAPTERS.get(source["adapter"])
     if adapter is None:
         raise ValueError(f"unknown adapter: {source['adapter']}")
@@ -145,7 +147,6 @@ async def poll_one(conn: sqlite3.Connection, source: dict[str, Any]) -> dict[str
         },
         actor="poller",
     )
-    conn.commit()
     return counts
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Protocol
 
 # ----- Candidate ---------------------------------------------------------
@@ -14,8 +14,6 @@ class Candidate:
     source_url: str
     body: str
     title: str | None = None
-    fetched_at: str | None = None
-    metadata: dict = field(default_factory=dict)
 
 
 # ----- Adapter protocol --------------------------------------------------
