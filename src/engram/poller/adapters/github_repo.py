@@ -127,6 +127,12 @@ class GitHubRepoAdapter:
             self._client = httpx.AsyncClient(**kwargs)
         return self._client
 
+    async def aclose(self) -> None:
+        """Close the underlying httpx client if one was lazily created (#92)."""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
     async def fetch(self, source: dict) -> AsyncIterator[Candidate]:
         self._ensure_client()
         cfg = json.loads(source.get("config") or "{}")

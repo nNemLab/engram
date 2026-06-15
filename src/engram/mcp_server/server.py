@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 from typing import Any
 
 from mcp.server import Server
@@ -22,9 +23,10 @@ from . import tools as toolmod
 logger = logging.getLogger("engram.mcp")
 
 
-def build_server() -> Server:
+def build_server(conn: sqlite3.Connection | None = None) -> Server:
     server = Server("engram")
-    conn = get_connection()
+    if conn is None:
+        conn = get_connection()
     registry = toolmod.build_registry(conn)
     lock = db_lock()
 
@@ -66,9 +68,15 @@ def build_server() -> Server:
 
 
 async def _run() -> None:
-    server = build_server()
-    async with stdio_server() as (read, write):
-        await server.run(read, write, server.create_initialization_options())
+    # Own the long-lived connection's lifecycle so the stdio daemon closes it on
+    # shutdown instead of leaking it + WAL sidecars (#92).
+    conn = get_connection()
+    try:
+        server = build_server(conn)
+        async with stdio_server() as (read, write):
+            await server.run(read, write, server.create_initialization_options())
+    finally:
+        conn.close()
 
 
 def main() -> None:

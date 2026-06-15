@@ -30,7 +30,18 @@ def _write_cursor(conn: sqlite3.Connection, last_id: int) -> None:
 
 
 def run() -> None:
+    # Own the long-lived connection's lifecycle: close it on any loop exit
+    # (KeyboardInterrupt/SIGINT or a fatal error) so the daemon doesn't leak the
+    # connection + WAL sidecars on shutdown (#92). common/db.get_connection
+    # documents that the caller must close.
     conn = get_connection()
+    try:
+        _run_loop(conn)
+    finally:
+        conn.close()
+
+
+def _run_loop(conn: sqlite3.Connection) -> None:
     cursor = _read_cursor(conn)
     logger.info("reactor starting; cursor=%d handlers=%s", cursor, list(HANDLERS))
     types = list(HANDLERS.keys())

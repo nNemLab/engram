@@ -131,18 +131,40 @@ async def poll_one(conn: sqlite3.Connection, source: dict[str, Any]) -> dict[str
     return counts
 
 
+async def _aclose_adapters() -> None:
+    """Close every adapter that holds an httpx.AsyncClient (#92).
+
+    Adapters opt in by exposing an async ``aclose()``; missing or failing closes
+    are tolerated so one stuck adapter can't block the rest of shutdown.
+    """
+    for adapter in ADAPTERS.values():
+        aclose = getattr(adapter, "aclose", None)
+        if aclose is None:
+            continue
+        try:
+            await aclose()
+        except Exception:  # noqa: BLE001
+            logger.exception("adapter aclose failed: %s", getattr(adapter, "name", adapter))
+
+
 async def run() -> None:
     load_config()
     conn = get_connection()
     logger.info("poller starting")
-    while True:
-        try:
-            for src in select_due(conn):
-                try:
-                    counts = await poll_one(conn, dict(src))
-                    logger.info("polled %s: %s", src["id"], counts)
-                except Exception:
-                    logger.exception("poll_one failed for %s", src["id"])
-        except Exception:
-            logger.exception("poller tick failed")
-        await asyncio.sleep(60)
+    try:
+        while True:
+            try:
+                for src in select_due(conn):
+                    try:
+                        counts = await poll_one(conn, dict(src))
+                        logger.info("polled %s: %s", src["id"], counts)
+                    except Exception:
+                        logger.exception("poll_one failed for %s", src["id"])
+            except Exception:
+                logger.exception("poller tick failed")
+            await asyncio.sleep(60)
+    finally:
+        # Graceful shutdown (#92): close adapter HTTP clients and the long-lived
+        # DB connection so the daemon doesn't leak file descriptors / WAL sidecars.
+        await _aclose_adapters()
+        conn.close()
