@@ -11,7 +11,7 @@ broken ``1 - d`` shortcut (which can go negative past ~60° and does not match
 the cosine range [0, 1] for orthogonal-to-identical vectors).
 
 .. note:: The identity is exact for unit-norm vectors.  Callers must ensure
-   embeddings are L2-normalised before insertion (see :func:`~engrag.rag.embed`
+   embeddings are L2-normalised before insertion (see :func:`~engram.rag.embed`
    for the default normalisation).
 """
 from __future__ import annotations

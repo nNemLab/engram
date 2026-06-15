@@ -7,6 +7,7 @@ components (grounding, near-dup) work on the true cosine scale.
 from __future__ import annotations
 
 import math
+from unittest.mock import Mock
 
 import pytest
 
@@ -62,54 +63,34 @@ class TestL2ToCosine:
 # Integration: query._vector_hits conversion end-to-end
 # ---------------------------------------------------------------------------
 
-def test_vector_hits_returns_true_cosine(tmp_path, monkeypatch):
-    """The query pipeline calls l2_to_cosine inside _vector_hits.
+def test_vector_hits_returns_true_cosine():
+    """Drive the REAL _vector_hits code (not a stub) by mocking the DB row.
 
-    We mock _vector_hits to call l2_to_cosine on known L2 distances (as the
-    real implementation does), then verify dense_sim carries those cosine
-    values through to the returned Hit objects.
+    conn.execute() returns rows with an L2 'distance' column; the production
+    code applies l2_to_cosine to it.  We verify the conversion happens *inside*
+    the call site, not in the test.
     """
     from engram.rag import query as q
-    from engram.rag._cosine import l2_to_cosine
-    from tests.rag import fresh_conn
 
-    conn = fresh_conn(tmp_path)
-    # Need content rows so hybrid_search can build Hit objects from hashes.
-    conn.execute(
-        "INSERT INTO content (hash,title,body,source_url,source_tier,"
-        "fetched_at,confidence,kind,tombstoned) VALUES "
-        "('h1','A','alpha term',NULL,'manual','2026-06-10T00:00:00Z',0.8,'kb',0), "
-        "('h2','B','beta term',NULL,'manual','2026-06-10T00:00:00Z',0.8,'kb',0)",
-    )
-    # Stub: vec0 returns L2 distances, converted to cosine by l2_to_cosine.
-    monkeypatch.setattr(q, "embed_one", lambda s: b"dummy")
-    monkeypatch.setattr(
-        q,
-        "_vector_hits",
-        lambda conn, emb, k: [
-            ("h1", l2_to_cosine(0.0)),
-            ("h2", l2_to_cosine(math.sqrt(2.0))),
-        ],
-    )
+    mock_conn = Mock()
+    mock_cursor = Mock()
+    d_identical = 0.0
+    d_orthogonal = math.sqrt(2.0)
+    mock_cursor.fetchall.return_value = [
+        {"content_hash": "h1", "distance": d_identical},
+        {"content_hash": "h2", "distance": d_orthogonal},
+    ]
+    mock_conn.execute.return_value = mock_cursor
 
-    # Patch load_config so hybrid_search doesn't try to load a real YAML.
-    from types import SimpleNamespace
+    results = q._vector_hits(mock_conn, b"dummy", 10)
 
-    base = SimpleNamespace(
-        rag=SimpleNamespace(top_k=12, rrf_k=60, embed_dim=4),
-        confidence=SimpleNamespace(source_tier_weights={}, recency_half_life_days=365),
-        grounding=SimpleNamespace(usage_weight=0.5, tau_high=0.62, tau_low=0.45,
-                                  delta=0.08, token_budget=1500),
-    )
-    from engram.common import config as cm
-
-    monkeypatch.setattr(cm, "load_config", lambda *a, **k: base)
-    monkeypatch.setattr(q, "load_config", lambda *a, **k: base)
-
-    hits = q.hybrid_search(conn, "dummy", log_retrieval=False)
-    sims = {h.hash: h.dense_sim for h in hits}
-    assert sims["h1"] == pytest.approx(1.0)
-    assert sims["h2"] == pytest.approx(0.0)
+    # Production code: _vector_hits calls l2_to_cosine(float(row["distance"]))
+    assert results == [
+        ("h1", l2_to_cosine(d_identical)),
+        ("h2", l2_to_cosine(d_orthogonal)),
+    ]
+    assert l2_to_cosine(d_identical) == pytest.approx(1.0)
+    assert l2_to_cosine(d_orthogonal) == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -166,21 +147,35 @@ def test_grounding_weak_at_true_cosine_0_50():
 # ---------------------------------------------------------------------------
 
 def test_near_dup_detects_at_correct_cosine_threshold():
-    """With tau=0.92, two vectors at 20° separation have cos(20°)≈0.9397 > 0.92.
-    The old code (1-d) would compute 1-0.347≈0.653 which FAILS the check.
-    The corrected code produces the right similarity and triggers near-dup."""
-    from engram.rag._cosine import l2_to_cosine
+    """Call the REAL dedup.find_near with a mocked DB row.
+
+    Two normalised vectors at ~20° separation have L2 distance d≈0.347,
+    true cosine≈0.940 (> 0.92 threshold) but 1-d≈0.653 (< 0.92).  The old
+    code would NOT fire near-dup; the fixed code must.
+    """
+    from engram.dedup import find_near
 
     # L2 distance between unit vectors at 20°:
     cos_20 = math.cos(math.radians(20))       # ≈ 0.9397
     d_20 = math.sqrt(2.0 * (1.0 - cos_20))    # ≈ 0.347
 
-    # Old code: 1 - d = 1 - 0.347 = 0.653  →  FAILS threshold 0.92
-    old_code = 1.0 - d_20
+    mock_conn = Mock()
+    mock_cursor = Mock()
+    mock_cursor.fetchone.return_value = {
+        "content_hash": "existing_hash",
+        "distance": d_20,
+    }
+    mock_conn.execute.return_value = mock_cursor
 
-    # New code: true cosine
-    new_code = l2_to_cosine(d_20)
+    result = find_near(mock_conn, b"dummy", 0.92)
 
-    assert old_code < 0.92, "old code correctly fails threshold"
-    assert new_code >= 0.92, "new code correctly passes threshold"
-    assert new_code == pytest.approx(cos_20, rel=1e-9)
+    # Old code would compute 1 - d_20 ≈ 0.653 < 0.92 → no match
+    old_value = 1.0 - d_20
+    assert old_value < 0.92, "pre-fix 1-L2 value correctly fails threshold"
+
+    # New code: find_near returns (hash, cosine) because it calls l2_to_cosine
+    assert result is not None
+    hash_kept, similarity = result
+    assert hash_kept == "existing_hash"
+    assert similarity == pytest.approx(cos_20, rel=1e-9)
+    assert similarity >= 0.92
