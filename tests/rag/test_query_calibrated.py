@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -63,6 +64,21 @@ def test_citation_boosts_ranking(tmp_path, monkeypatch):
     hits = q.hybrid_search(conn, "alpha", log_retrieval=False)
     order = [h.hash for h in hits]
     assert order.index("h2") < order.index("h1"), "cited h2 should rank above h1"
+
+
+def test_vector_hits_query_filters_tombstoned_rows():
+    import engram.rag.query as q
+
+    conn = Mock()
+    cur = Mock()
+    cur.fetchall.return_value = [{"content_hash": "live", "distance": 0.0}]
+    conn.execute.return_value = cur
+
+    hits = q._vector_hits(conn, b"qemb", 2)
+
+    assert [h for h, _ in hits] == ["live"]
+    sql = conn.execute.call_args.args[0]
+    assert "tombstoned = 0" in sql
 
 
 def test_since_filters_old_entries(tmp_path, monkeypatch):
