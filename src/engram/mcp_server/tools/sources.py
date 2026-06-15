@@ -63,13 +63,12 @@ def register(conn: sqlite3.Connection) -> dict[str, dict]:
 
     def list_(args: dict[str, Any]) -> list[dict[str, Any]]:
         sql = "SELECT * FROM sources WHERE 1=1"
-        params: list[Any] = []
         if args.get("paused_only"):
             sql += " AND paused = 1"
         if args.get("with_errors"):
             sql += " AND error_count > 0"
         sql += " ORDER BY id"
-        return [_row_to_dict(r) for r in conn.execute(sql, params)]
+        return [_row_to_dict(r) for r in conn.execute(sql)]
 
     def get_(args: dict[str, Any]) -> dict[str, Any]:
         row = conn.execute("SELECT * FROM sources WHERE id = ?", (args["id"],)).fetchone()
