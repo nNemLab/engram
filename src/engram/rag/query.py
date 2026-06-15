@@ -33,7 +33,7 @@ def _vector_hits(conn: sqlite3.Connection, query_emb: bytes, k: int) -> list[tup
     rows = conn.execute(
         "SELECT content_hash, distance FROM embeddings "
         "WHERE embedding MATCH ? "
-        "AND content_hash IN (SELECT hash FROM content WHERE tombstoned = 0) "
+        "AND content_hash IN (SELECT hash FROM content WHERE tombstoned = 0 AND is_current = 1) "
         "ORDER BY distance LIMIT ?",
         (query_emb, k),
     ).fetchall()
@@ -177,7 +177,7 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = N
     placeholders = ",".join("?" * len(hashes))
     rows = conn.execute(
         f"SELECT hash, title, body, source_url, source_tier, fetched_at, confidence, kind "
-        f"FROM content WHERE hash IN ({placeholders}) AND tombstoned = 0",
+        f"FROM content WHERE hash IN ({placeholders}) AND tombstoned = 0 AND is_current = 1",
         hashes,
     ).fetchall()
     by_hash = {r["hash"]: r for r in rows}

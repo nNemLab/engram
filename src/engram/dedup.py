@@ -56,7 +56,7 @@ def find_near(conn: sqlite3.Connection, embedding: bytes, threshold: float) -> t
     cur = conn.execute(
         "SELECT content_hash, distance FROM embeddings "
         "WHERE embedding MATCH ? "
-        "AND content_hash IN (SELECT hash FROM content WHERE tombstoned = 0) "
+        "AND content_hash IN (SELECT hash FROM content WHERE tombstoned = 0 AND is_current = 1) "
         "ORDER BY distance LIMIT 1",
         (embedding,),
     )

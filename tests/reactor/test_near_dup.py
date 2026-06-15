@@ -32,11 +32,11 @@ def _vec(xs):
     return struct.pack(f"{len(xs)}f", *xs)
 
 
-def _add(conn, h, body, tombstoned=0):
+def _add(conn, h, body, tombstoned=0, is_current=1):
     conn.execute(
         "INSERT INTO content (hash, title, body, source_url, source_tier, fetched_at, "
-        "confidence, kind, tombstoned) VALUES (?,?,?,?,?,?,?,?,?)",
-        (h, h, body, None, "manual", "2026-06-10T00:00:00Z", 0.8, "kb", tombstoned),
+        "confidence, kind, tombstoned, is_current) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (h, h, body, None, "manual", "2026-06-10T00:00:00Z", 0.8, "kb", tombstoned, is_current),
     )
 
 
@@ -79,6 +79,30 @@ def test_on_ingested_ignores_tombstoned_nearest_neighbor(tmp_path, monkeypatch):
     conn.execute("INSERT INTO embeddings (content_hash, embedding) VALUES (?, ?)",
                  ("A", _vec([1.0, 0.0, 0.0, 0.0])))
     # New content B should NOT be tombstoned against dead A.
+    _add(conn, "B", "fresh content")
+
+    import engram.reactor.handlers as H
+    monkeypatch.setattr(H, "load_config", lambda *a, **k: _cfg())
+    monkeypatch.setattr(H.embedder, "embed_one", lambda text: _vec([1.0, 0.0, 0.0, 0.0]))
+    monkeypatch.setattr(H.chunker, "chunk_markdown", lambda *a, **k: ["chunk"])
+    monkeypatch.setattr(H.chunker, "embed_prefix", lambda body, n: body)
+
+    evt = SimpleNamespace(type="ingested", payload={"hash": "B"}, id=1)
+    H.on_ingested(conn, evt)
+
+    assert conn.execute("SELECT tombstoned FROM content WHERE hash='B'").fetchone()[0] == 0
+    assert conn.execute("SELECT count(*) FROM events WHERE type='merged'").fetchone()[0] == 0
+
+
+def test_on_ingested_ignores_non_current_nearest_neighbor(tmp_path, monkeypatch):
+    """A superseded (is_current=0, not tombstoned) row with its embedding still
+    present must never be the near-dup target for newly ingested content (#139)."""
+    conn = _conn(tmp_path)
+    # Existing superseded content A (is_current=0) with an embedding identical to B.
+    _add(conn, "A", "superseded near-dup", is_current=0)
+    conn.execute("INSERT INTO embeddings (content_hash, embedding) VALUES (?, ?)",
+                 ("A", _vec([1.0, 0.0, 0.0, 0.0])))
+    # New content B should NOT be tombstoned against superseded A.
     _add(conn, "B", "fresh content")
 
     import engram.reactor.handlers as H

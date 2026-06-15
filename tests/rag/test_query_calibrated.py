@@ -81,6 +81,39 @@ def test_vector_hits_query_filters_tombstoned_rows():
     assert "tombstoned = 0" in sql
 
 
+def test_vector_hits_query_filters_non_current_rows():
+    import engram.rag.query as q
+
+    conn = Mock()
+    cur = Mock()
+    cur.fetchall.return_value = [{"content_hash": "live", "distance": 0.0}]
+    conn.execute.return_value = cur
+
+    q._vector_hits(conn, b"qemb", 2)
+
+    sql = conn.execute.call_args.args[0]
+    assert "is_current = 1" in sql
+
+
+def test_hybrid_search_excludes_non_current_rows(tmp_path, monkeypatch):
+    """A superseded (is_current=0, not tombstoned) row must not appear in
+    hybrid_search results even when the fuser surfaces it (#139)."""
+    _stub_cfg(monkeypatch)
+    conn = fresh_conn(tmp_path)
+    # `old` superseded but not tombstoned; `new` is the current revision.
+    conn.execute(
+        "INSERT INTO content (hash,title,body,source_url,source_tier,fetched_at,"
+        "confidence,kind,tombstoned,is_current) VALUES "
+        "('old','Old','alpha term',NULL,'manual','2026-06-10T00:00:00Z',0.8,'kb',0,0)"
+    )
+    _add(conn, "new", "New", "alpha term")  # is_current defaults to 1
+    import engram.rag.query as q
+    monkeypatch.setattr(q, "embed_one", lambda s: b"x")
+    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [("old", 0.80), ("new", 0.80)])
+    hits = q.hybrid_search(conn, "alpha", log_retrieval=False)
+    assert [h.hash for h in hits] == ["new"]
+
+
 def test_since_filters_old_entries(tmp_path, monkeypatch):
     _stub_cfg(monkeypatch)
     conn = fresh_conn(tmp_path)

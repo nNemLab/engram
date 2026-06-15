@@ -40,7 +40,7 @@ def on_ingested(conn: sqlite3.Connection, evt: event_log.Event) -> None:
     rows = conn.execute(
         "SELECT content_hash, distance FROM embeddings "
         "WHERE embedding MATCH ? "
-        "AND content_hash IN (SELECT hash FROM content WHERE tombstoned = 0) "
+        "AND content_hash IN (SELECT hash FROM content WHERE tombstoned = 0 AND is_current = 1) "
         "AND k = 2 ORDER BY distance",
         (emb,),
     ).fetchall()
