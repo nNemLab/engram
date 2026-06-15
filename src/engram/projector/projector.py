@@ -30,7 +30,7 @@ def _atomic_write(path: Path, body: str) -> None:
     or the complete new bytes, never a torn intermediate (#96).
     """
     tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-    tmp.write_text(body)
+    tmp.write_text(body, encoding="utf-8")
     os.replace(tmp, path)
 
 

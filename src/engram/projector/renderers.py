@@ -9,7 +9,7 @@ import yaml
 
 
 def _frontmatter(d: dict) -> str:
-    return "---\n" + yaml.safe_dump(d, sort_keys=False).strip() + "\n---\n\n"
+    return "---\n" + yaml.safe_dump(d, sort_keys=False, allow_unicode=True).strip() + "\n---\n\n"
 
 
 def _safe_slug(s: str | None, fallback: str) -> str:

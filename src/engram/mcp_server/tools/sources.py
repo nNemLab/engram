@@ -5,6 +5,8 @@ import json
 import sqlite3
 from typing import Any
 
+from ... import log as event_log
+from ...common.db import transaction
 from ...common.time import utcnow_iso
 from ...sources.health import source_health
 
@@ -34,22 +36,29 @@ def register(conn: sqlite3.Connection) -> dict[str, dict]:
             return {"error": f"unknown adapter: {adapter}"}
         schedule = args.get("schedule") or DEFAULT_SCHEDULE[adapter]
         config = json.dumps(args.get("config") or {})
-        conn.execute(
-            "INSERT INTO sources "
-            "(id, name, adapter, url, config, schedule, source_tier, paused, next_poll_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)",
-            (
-                args["id"],
-                args["name"],
-                adapter,
-                args["url"],
-                config,
-                schedule,
-                args.get("source_tier") or "vendor-doc",
-                1 if args.get("paused") else 0,
-            ),
-        )
-        conn.commit()
+        source_tier = args.get("source_tier") or "vendor-doc"
+        paused = 1 if args.get("paused") else 0
+        with transaction(conn):
+            conn.execute(
+                "INSERT INTO sources "
+                "(id, name, adapter, url, config, schedule, source_tier, paused, next_poll_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+                (
+                    args["id"],
+                    args["name"],
+                    adapter,
+                    args["url"],
+                    config,
+                    schedule,
+                    source_tier,
+                    paused,
+                ),
+            )
+            event_log.append(
+                conn, "source_added",
+                {"source_id": args["id"], "adapter": adapter, "name": args["name"]},
+                actor="agent",
+            )
         return {"id": args["id"], "next_poll_at": None}
 
     def list_(args: dict[str, Any]) -> list[dict[str, Any]]:
@@ -73,8 +82,13 @@ def register(conn: sqlite3.Connection) -> dict[str, dict]:
 
     def remove(args: dict[str, Any]) -> dict[str, Any]:
         try:
-            cur = conn.execute("DELETE FROM sources WHERE id = ?", (args["id"],))
-            conn.commit()
+            with transaction(conn):
+                cur = conn.execute("DELETE FROM sources WHERE id = ?", (args["id"],))
+                event_log.append(
+                    conn, "source_removed",
+                    {"source_id": args["id"], "removed": cur.rowcount > 0},
+                    actor="agent",
+                )
             return {"removed": cur.rowcount > 0}
         except sqlite3.IntegrityError:
             return {
@@ -83,11 +97,16 @@ def register(conn: sqlite3.Connection) -> dict[str, dict]:
             }
 
     def fetch_now(args: dict[str, Any]) -> dict[str, Any]:
-        cur = conn.execute(
-            "UPDATE sources SET next_poll_at = NULL, updated_at = ? WHERE id = ?",
-            (utcnow_iso("s"), args["id"]),
-        )
-        conn.commit()
+        with transaction(conn):
+            cur = conn.execute(
+                "UPDATE sources SET next_poll_at = NULL, updated_at = ? WHERE id = ?",
+                (utcnow_iso("s"), args["id"]),
+            )
+            event_log.append(
+                conn, "source_fetch_requested",
+                {"source_id": args["id"], "triggered": cur.rowcount > 0},
+                actor="agent",
+            )
         return {"triggered": cur.rowcount > 0, "id": args["id"]}
 
     def set_(args: dict[str, Any]) -> dict[str, Any]:
@@ -122,13 +141,18 @@ def register(conn: sqlite3.Connection) -> dict[str, dict]:
             return {"updated_fields": []}
         fields.append("updated_at = ?")
         params.append(utcnow_iso("s"))
-        params.append(args["id"])
-        cur = conn.execute(
-            f"UPDATE sources SET {', '.join(fields)} WHERE id = ?", params
-        )
-        conn.commit()
-        if cur.rowcount == 0:
-            return {"error": "not found", "id": args["id"]}
+        with transaction(conn):
+            params.append(args["id"])
+            cur = conn.execute(
+                f"UPDATE sources SET {', '.join(fields)} WHERE id = ?", params
+            )
+            if cur.rowcount == 0:
+                return {"error": "not found", "id": args["id"]}
+            event_log.append(
+                conn, "source_updated",
+                {"source_id": args["id"], "updated_fields": updated},
+                actor="agent",
+            )
         return {"updated_fields": updated}
 
     def health(args: dict[str, Any]) -> dict[str, Any]:
