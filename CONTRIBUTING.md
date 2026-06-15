@@ -17,7 +17,7 @@ Run the lint and unit-test suite the same way CI does:
 uv run --extra dev ruff check
 
 # Hermetic unit tests (sqlite + httpx.MockTransport — no network, no models)
-uv run --extra dev pytest tests/sources tests/research tests/mcp_server tests/common -q
+uv run --extra dev pytest tests/sources tests/research tests/mcp_server tests/common tests/rag tests/reactor -q
 ```
 
 CI pins Python 3.11 and runs against the committed `uv.lock`
@@ -28,7 +28,8 @@ safest way to reproduce a green build.
 
 This repository is test-driven. **New features and bug fixes should come with
 tests.** The hermetic suites (`tests/sources`, `tests/research`,
-`tests/mcp_server`, `tests/common`) run without network access, embedding
+`tests/mcp_server`, `tests/common`, `tests/rag`, `tests/reactor`) run without
+network access, embedding
 models, or an LLM, and are what CI gates on — prefer adding coverage there so
 your change is verifiable on a hosted runner. (`tests/integration` is excluded
 from CI until its fixtures are wired.)
@@ -58,7 +59,8 @@ fixes both ship as patches, and a minor is a deliberate choice:
 - `fix: …` — a bug fix → **patch** bump.
 - `feat!: …` or a `BREAKING CHANGE:` footer → **minor** bump (while `0.x`; it
   will bump **major** once the project reaches `1.0.0`).
-- `docs:` / `test:` / `chore:` / `build:` / `ci:` / `refactor:` — no release.
+- `docs:` / `test:` / `chore:` / `build:` / `ci:` / `refactor:` / `deps:` — no
+  release. (`ci:` and `deps:` are also emitted automatically by Dependabot.)
 - To cut a minor for a notable-but-non-breaking change, add `Release-As: 0.X.0`
   to the commit.
 
