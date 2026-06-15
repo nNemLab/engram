@@ -53,7 +53,7 @@ async def test_sitemap_no_changes_yields_zero(monkeypatch):
 
     src = {
         "id": "t", "url": "https://docs.example.com/sitemap.xml",
-        "config": json.dumps({"include": ["*/engine/*"], "request_interval_ms": 0}),
+        "config": json.dumps({"include": ["**/engine/**"], "request_interval_ms": 0}),
         "cursor": None,
     }
     adapter = SitemapAdapter(_client=httpx.AsyncClient(transport=transport))
@@ -90,7 +90,7 @@ async def test_sitemap_last_modified_only_honored():
     transport = httpx.MockTransport(h)
     src = {
         "id": "t", "url": "https://docs.example.com/sitemap.xml",
-        "config": json.dumps({"include": ["*/engine/*"], "request_interval_ms": 0}),
+        "config": json.dumps({"include": ["**/engine/**"], "request_interval_ms": 0}),
         "cursor": None,
     }
     adapter1 = SitemapAdapter(_client=httpx.AsyncClient(transport=transport))

@@ -1,7 +1,6 @@
 """Adapter protocol, Candidate dataclass, ADAPTERS registry, glob filter."""
 from __future__ import annotations
 
-import fnmatch
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -37,16 +36,35 @@ class Adapter(Protocol):
 # ----- Glob filter helper ------------------------------------------------
 
 def _glob_to_regex(pattern: str) -> re.Pattern[str]:
-    """Translate a shell glob (with ** for any-depth) to a regex.
+    """Translate a shell glob (with * / ? / **) to a regex.
 
-    fnmatch.translate handles single * and ? but treats ** identically to *.
-    We pre-substitute a sentinel for ** so multi-segment matches work.
+    **/  (double-star followed by slash) -> (?:.*/)?   — zero or more full segments
+    **   (trailing double-star)           -> .*          — anything
+    *                                -> [^/]*           — within one segment
+    ?                                -> [^/]            — one non-slash char
+    any other char                   -> regex-escaped   — literal match
     """
-    SENTINEL = "\x00DOUBLESTAR\x00"
-    pat = pattern.replace("**", SENTINEL)
-    regex = fnmatch.translate(pat)
-    regex = regex.replace(re.escape(SENTINEL), ".*")
-    return re.compile(regex)
+    out: list[str] = []
+    i = 0
+    n = len(pattern)
+    while i < n:
+        if pattern[i] == "*" and i + 1 < n and pattern[i + 1] == "*":
+            if i + 2 < n and pattern[i + 2] == "/":
+                out.append("(?:.*/)?")
+                i += 3  # skip "**/"
+            else:
+                out.append(".*")
+                i += 2  # trailing "**"
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("^" + "".join(out) + "$")
 
 
 def matches_globs(path: str, include: list[str], exclude: list[str]) -> bool:
