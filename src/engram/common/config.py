@@ -56,7 +56,7 @@ class RagConfig:
 class ConfidenceConfig:
     source_tier_weights: dict[str, float] = field(default_factory=dict)
     recency_half_life_days: int = 365
-    recency_score_enabled: bool = True
+    recency_score_enabled: bool = False
     recency_score_weight: float = 0.2
     recency_score_half_life_days: int = 30
 

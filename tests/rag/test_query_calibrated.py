@@ -175,16 +175,6 @@ def test_relevant_outranks_higher_confidence_irrelevant(tmp_path, monkeypatch):
 
 
 def test_recency_score_prefers_fresher_docs(tmp_path, monkeypatch):
-    _stub_cfg(
-        monkeypatch,
-        confidence=SimpleNamespace(
-            source_tier_weights={},
-            recency_half_life_days=365,
-            recency_score_enabled=True,
-            recency_score_weight=1.0,
-            recency_score_half_life_days=30,
-        ),
-    )
     conn = fresh_conn(tmp_path)
     conn.execute(
         "INSERT INTO content (hash, title, body, source_url, source_tier, fetched_at, "
@@ -203,10 +193,34 @@ def test_recency_score_prefers_fresher_docs(tmp_path, monkeypatch):
         fromisoformat=datetime.fromisoformat,
     ))
     monkeypatch.setattr(q, "embed_one", lambda s: b"x")
-    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [("old", 0.80), ("new", 0.80)])
+    # Older doc has stronger dense relevance; recency ON should flip this order.
+    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [("old", 0.95), ("new", 0.80)])
 
-    hits = q.hybrid_search(conn, "alpha", log_retrieval=False)
-    assert [h.hash for h in hits][:2] == ["new", "old"]
+    _stub_cfg(
+        monkeypatch,
+        confidence=SimpleNamespace(
+            source_tier_weights={},
+            recency_half_life_days=100000,
+            recency_score_enabled=False,
+            recency_score_weight=1.0,
+            recency_score_half_life_days=30,
+        ),
+    )
+    off_hits = q.hybrid_search(conn, "alpha", log_retrieval=False)
+    assert [h.hash for h in off_hits][:2] == ["old", "new"]
+
+    _stub_cfg(
+        monkeypatch,
+        confidence=SimpleNamespace(
+            source_tier_weights={},
+            recency_half_life_days=100000,
+            recency_score_enabled=True,
+            recency_score_weight=1.0,
+            recency_score_half_life_days=30,
+        ),
+    )
+    on_hits = q.hybrid_search(conn, "alpha", log_retrieval=False)
+    assert [h.hash for h in on_hits][:2] == ["new", "old"]
 
 
 def test_recency_score_toggle_and_weight_controls_impact(tmp_path, monkeypatch):
