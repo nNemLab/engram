@@ -2,33 +2,49 @@
 
 Engram is a security-adjacent MCP server: it performs outbound HTTP fetching
 (polled sources, URL/arXiv ingestion, self-hosted web search) and reads/writes
-files within a configured vault. We take SSRF protection and path containment
-seriously and welcome reports of any weakness in these areas.
+files within a configured vault. SSRF protection and path containment are
+priority areas, and reports of any weakness there are especially welcome.
 
 ## Supported versions
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
-| < 0.1   | :x:                |
-
-Only the latest 0.1.x release line receives security fixes.
+Engram is pre-1.0 and released continuously. Security fixes target the
+**latest released 0.x version**. For an issue on an older release, please
+confirm it reproduces on the latest release first.
 
 ## Reporting a vulnerability
 
-**Please do not open a public issue for security vulnerabilities.**
+**Please do not open a public issue, discussion, or pull request for security
+vulnerabilities.**
 
-Use GitHub's private vulnerability reporting:
+Report privately through GitHub:
 
 1. Go to the repository's **Security** tab.
-2. Click **Report a vulnerability** (under *Security Advisories*).
-3. Provide a clear description, affected version(s), and reproduction steps.
+2. Click **Report a vulnerability**.
+3. Submit the private advisory form.
 
-This routes your report privately to the maintainer so the issue can be
-triaged and fixed before public disclosure.
+This routes the report privately to the maintainer for triage and a fix before
+public disclosure.
+
+### What to include
+
+Keep it minimal — only the first two are required:
+
+- **Required**
+  - **Title** — one-line summary.
+  - **Description** — what the issue is and why it is a security concern.
+- **Helpful (optional)**
+  - Affected version or commit.
+  - Reproduction steps or proof of concept.
+  - Impact — what an attacker could do.
+  - Suggested fix or mitigation.
 
 ## Response expectations
 
 Engram is a solo-maintained, open-source project. Responses are best-effort:
-we aim to acknowledge a report within about a week and to coordinate a fix and
-disclosure timeline with you from there. Thank you for reporting responsibly.
+acknowledgement within about 7 days, then validation, fix, and disclosure
+timing coordinated with you.
+
+## Coordinated disclosure
+
+Please keep the report private until a fix is released and disclosure is
+coordinated.
