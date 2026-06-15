@@ -8,6 +8,7 @@ from typing import Any
 
 
 def prime(conn: sqlite3.Connection, *, cwd: str | None = None,
+          # reserved: cwd-scoped priming not yet implemented (see #181)
           token_budget: int = 1500, max_goals: int = 5, max_entries: int = 5) -> dict[str, Any]:
     goals = conn.execute(
         "SELECT text, priority FROM goals WHERE status='active' "
