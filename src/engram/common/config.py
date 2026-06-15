@@ -157,7 +157,3 @@ def load_config(path: Path | None = None) -> Config:
         research=ResearchConfig(**raw.get("research", {})),
         grounding=GroundingConfig(**raw.get("grounding", {})),
     )
-
-
-def env(key: str, default: str = "") -> str:
-    return os.environ.get(key, default)
