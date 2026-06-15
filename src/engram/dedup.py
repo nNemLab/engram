@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 from . import log as event_log
 from .common.config import load_config
+from .common.db import transaction
 from .rag._cosine import l2_to_cosine
 
 Outcome = Literal["new", "exact_dup", "near_dup", "contradicts", "superseded", "supersede_blocked"]
@@ -175,59 +176,61 @@ def resolve_supersede(
 
     if choice == "accept_upstream":
         # Promote upstream to current, demote the human row, clear protection so the
-        # upstream row behaves like any normal sourced row from here on.
-        conn.execute(
-            "UPDATE content SET is_current = 0, superseded_by = ? WHERE hash = ?",
-            (upstream_hash, human_hash),
-        )
-        conn.execute(
-            "UPDATE content SET is_current = 1, protected = 0, tombstoned = 0 WHERE hash = ?",
-            (upstream_hash,),
-        )
-        conn.execute(
-            "UPDATE contradictions SET resolved = 1, resolution = 'kept_b' WHERE id = ?",
-            (cid,),
-        )
-        # A `superseded` event re-projects the vault file (human bytes -> upstream).
-        source_url_row = conn.execute(
-            "SELECT source_url, revision FROM content WHERE hash = ?", (upstream_hash,)
-        ).fetchone()
-        event_log.append(
-            conn, "superseded",
-            {
-                "hash_old": human_hash,
-                "hash_new": upstream_hash,
-                "source_url": source_url_row["source_url"] if source_url_row else None,
-                "revision": source_url_row["revision"] if source_url_row else None,
-                "reason": "resolve_accept_upstream",
-            },
-            actor=actor,
-        )
-        conn.commit()
+        # upstream row behaves like any normal sourced row from here on. The whole
+        # sequence is atomic (#83): a failure mid-flip must not leave zero or two
+        # current rows for the source_url.
+        with transaction(conn):
+            conn.execute(
+                "UPDATE content SET is_current = 0, superseded_by = ? WHERE hash = ?",
+                (upstream_hash, human_hash),
+            )
+            conn.execute(
+                "UPDATE content SET is_current = 1, protected = 0, tombstoned = 0 WHERE hash = ?",
+                (upstream_hash,),
+            )
+            conn.execute(
+                "UPDATE contradictions SET resolved = 1, resolution = 'kept_b' WHERE id = ?",
+                (cid,),
+            )
+            # A `superseded` event re-projects the vault file (human bytes -> upstream).
+            source_url_row = conn.execute(
+                "SELECT source_url, revision FROM content WHERE hash = ?", (upstream_hash,)
+            ).fetchone()
+            event_log.append(
+                conn, "superseded",
+                {
+                    "hash_old": human_hash,
+                    "hash_new": upstream_hash,
+                    "source_url": source_url_row["source_url"] if source_url_row else None,
+                    "revision": source_url_row["revision"] if source_url_row else None,
+                    "reason": "resolve_accept_upstream",
+                },
+                actor=actor,
+            )
         return {"outcome": "accept_upstream", "hash": upstream_hash,
                 "contradiction_id": cid, "resolution": "kept_b"}
 
     # keep_mine: human row is already current+protected; nothing to change there.
-    conn.execute(
-        "UPDATE contradictions SET resolved = 1, resolution = 'kept_a' WHERE id = ?",
-        (cid,),
-    )
-    if tombstone_upstream:
+    with transaction(conn):
         conn.execute(
-            "UPDATE content SET tombstoned = 1 WHERE hash = ?", (upstream_hash,)
+            "UPDATE contradictions SET resolved = 1, resolution = 'kept_a' WHERE id = ?",
+            (cid,),
         )
-        # Drop the embedding too, if the vec table is present (created at runtime).
-        try:
-            conn.execute("DELETE FROM embeddings WHERE content_hash = ?", (upstream_hash,))
-        except sqlite3.OperationalError:
-            pass
-    event_log.append(
-        conn, "contradiction_resolved",
-        {"hash_a": human_hash, "hash_b": upstream_hash, "resolution": "kept_a",
-         "tombstoned_upstream": bool(tombstone_upstream)},
-        actor=actor,
-    )
-    conn.commit()
+        if tombstone_upstream:
+            conn.execute(
+                "UPDATE content SET tombstoned = 1 WHERE hash = ?", (upstream_hash,)
+            )
+            # Drop the embedding too, if the vec table is present (created at runtime).
+            try:
+                conn.execute("DELETE FROM embeddings WHERE content_hash = ?", (upstream_hash,))
+            except sqlite3.OperationalError:
+                pass
+        event_log.append(
+            conn, "contradiction_resolved",
+            {"hash_a": human_hash, "hash_b": upstream_hash, "resolution": "kept_a",
+             "tombstoned_upstream": bool(tombstone_upstream)},
+            actor=actor,
+        )
     return {"outcome": "keep_mine", "hash": human_hash,
             "contradiction_id": cid, "resolution": "kept_a"}
 
@@ -277,34 +280,41 @@ def gate(
                 # changes all land at the same revision number — harmless, since
                 # these rows are non-current and tracked via the contradiction.
                 new_revision = live["revision"] + 1
-                insert_content(
-                    conn, body=body, title=title, source_url=source_url,
-                    source_tier=source_tier, confidence=confidence, ttl_days=ttl_days,
-                    kind=kind, revision=new_revision, is_current=0, source_id=source_id,
-                )
-                _record_supersede_contradiction(conn, live["hash"], h, source_url, actor)
+                # Atomic (#83): the non-current insert and the contradiction
+                # record must land together or not at all.
+                with transaction(conn):
+                    insert_content(
+                        conn, body=body, title=title, source_url=source_url,
+                        source_tier=source_tier, confidence=confidence, ttl_days=ttl_days,
+                        kind=kind, revision=new_revision, is_current=0, source_id=source_id,
+                    )
+                    _record_supersede_contradiction(conn, live["hash"], h, source_url, actor)
                 return GateResult(outcome="supersede_blocked", hash=h)
             # --- existing (unprotected) supersede logic continues unchanged below ---
             new_revision = live["revision"] + 1
-            insert_content(
-                conn, body=body, title=title, source_url=source_url,
-                source_tier=source_tier, confidence=confidence, ttl_days=ttl_days,
-                kind=kind, revision=new_revision, is_current=1, source_id=source_id,
-            )
-            conn.execute(
-                "UPDATE content SET is_current = 0, superseded_by = ? WHERE hash = ?",
-                (h, live["hash"]),
-            )
-            event_log.append(
-                conn, "superseded",
-                {
-                    "hash_old": live["hash"],
-                    "hash_new": h,
-                    "source_url": source_url,
-                    "revision": new_revision,
-                },
-                actor=actor, correlation_id=correlation_id,
-            )
+            # Atomic (#83): insert the new is_current=1 revision AND clear the old
+            # one in one transaction. A failure between them would otherwise leave
+            # TWO current rows for this source_url; ROLLBACK leaves exactly one.
+            with transaction(conn):
+                insert_content(
+                    conn, body=body, title=title, source_url=source_url,
+                    source_tier=source_tier, confidence=confidence, ttl_days=ttl_days,
+                    kind=kind, revision=new_revision, is_current=1, source_id=source_id,
+                )
+                conn.execute(
+                    "UPDATE content SET is_current = 0, superseded_by = ? WHERE hash = ?",
+                    (h, live["hash"]),
+                )
+                event_log.append(
+                    conn, "superseded",
+                    {
+                        "hash_old": live["hash"],
+                        "hash_new": h,
+                        "source_url": source_url,
+                        "revision": new_revision,
+                    },
+                    actor=actor, correlation_id=correlation_id,
+                )
             return GateResult(outcome="superseded", hash=h)
 
     if embedding is not None:

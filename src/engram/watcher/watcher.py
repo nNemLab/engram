@@ -25,7 +25,7 @@ from watchdog.observers import Observer
 
 from .. import log as event_log
 from ..common.config import load_config
-from ..common.db import get_connection
+from ..common.db import db_lock, get_connection, transaction
 from .differ import unified_diff
 
 logger = logging.getLogger("engram.watcher")
@@ -81,96 +81,108 @@ class _Handler(FileSystemEventHandler):
 
 
 def _on_change(conn: sqlite3.Connection, rel: str, abs_path: str) -> None:
-    p = Path(abs_path)
-    if not p.exists():
-        return
-    new_body = p.read_text()
-    row = conn.execute(
-        "SELECT content_hash, rendered_body FROM vault_state WHERE vault_path = ?",
-        (rel,),
-    ).fetchone()
-    if not row:
-        # New file dropped into vault by hand. Treat as an inbox ingest.
-        from .. import dedup
-        result = dedup.gate(
-            conn, body=new_body, title=p.stem, source_tier="manual",
-            confidence=0.7, kind="kb", actor="human",
-        )
-        logger.info("inbox ingest from %s -> %s (%s)", rel, result.outcome, result.hash)
-        return
-    if new_body == row["rendered_body"]:
-        return  # no real change (touch / Obsidian metadata write)
-    from ..dedup import content_hash
+    # Serialize the whole change-handling op (#83): the watcher fires this from
+    # `threading.Timer` daemon threads (one per debounced path), all driving the
+    # single shared connection. The lock guarantees the read-then-write revision
+    # sequence below never interleaves with another thread's use of the
+    # connection; the inner `transaction` calls re-enter the same RLock.
+    with db_lock():
+        p = Path(abs_path)
+        if not p.exists():
+            return
+        new_body = p.read_text()
+        row = conn.execute(
+            "SELECT content_hash, rendered_body FROM vault_state WHERE vault_path = ?",
+            (rel,),
+        ).fetchone()
+        if not row:
+            # New file dropped into vault by hand. Treat as an inbox ingest.
+            from .. import dedup
+            result = dedup.gate(
+                conn, body=new_body, title=p.stem, source_tier="manual",
+                confidence=0.7, kind="kb", actor="human",
+            )
+            logger.info("inbox ingest from %s -> %s (%s)", rel, result.outcome, result.hash)
+            return
+        if new_body == row["rendered_body"]:
+            return  # no real change (touch / Obsidian metadata write)
+        from ..dedup import content_hash
 
-    diff = unified_diff(row["rendered_body"], new_body, rel)
-    old_hash = row["content_hash"]
-    new_hash = content_hash(new_body)
-    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        diff = unified_diff(row["rendered_body"], new_body, rel)
+        old_hash = row["content_hash"]
+        new_hash = content_hash(new_body)
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    if new_hash == old_hash:
-        # Edit normalizes to the same content (whitespace/case only). The row
-        # stays content-addressed; just refresh the stored bytes and protect it.
-        conn.execute(
-            "UPDATE content SET body = ?, updated_at = ?, protected = 1 WHERE hash = ?",
-            (new_body, now, old_hash),
-        )
-        conn.execute(
-            "UPDATE vault_state SET rendered_body = ?, rendered_at = ? WHERE vault_path = ?",
-            (new_body, now, rel),
-        )
-        event_log.append(
-            conn, "vault_edit",
-            {"path": rel, "hash": new_hash, "hash_old": old_hash,
-             "hash_new": new_hash, "diff": diff[:8000]},
-            actor="human",
-        )
-        logger.info("vault_edit recorded (normalized no-op): %s (hash=%s)", rel, new_hash)
-        return
+        if new_hash == old_hash:
+            # Edit normalizes to the same content (whitespace/case only). The row
+            # stays content-addressed; just refresh the stored bytes and protect it.
+            with transaction(conn):
+                conn.execute(
+                    "UPDATE content SET body = ?, updated_at = ?, protected = 1 WHERE hash = ?",
+                    (new_body, now, old_hash),
+                )
+                conn.execute(
+                    "UPDATE vault_state SET rendered_body = ?, rendered_at = ? WHERE vault_path = ?",
+                    (new_body, now, rel),
+                )
+                event_log.append(
+                    conn, "vault_edit",
+                    {"path": rel, "hash": new_hash, "hash_old": old_hash,
+                     "hash_new": new_hash, "diff": diff[:8000]},
+                    actor="human",
+                )
+            logger.info("vault_edit recorded (normalized no-op): %s (hash=%s)", rel, new_hash)
+            return
 
-    # A human edit is a first-class new revision, not an in-place body mutation
-    # (#55 — mutating body while keeping the hash breaks content-addressing).
-    # Insert a new current+protected revision addressed by content_hash(new_body),
-    # carry the source metadata forward, supersede the old revision, and repoint
-    # the vault_state projection. protected=1 keeps the poller from superseding
-    # the human's edit (#37).
-    old = conn.execute("SELECT * FROM content WHERE hash = ?", (old_hash,)).fetchone()
-    if old is None:
-        logger.warning("vault_state %s references missing content %s; skipping", rel, old_hash)
-        return
-    conn.execute(
-        """INSERT OR IGNORE INTO content
-           (hash, body, title, source_url, source_tier, fetched_at, confidence,
-            ttl_days, kind, revision, is_current, protected, vault_path, source_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)""",
-        (new_hash, new_body, old["title"], old["source_url"], old["source_tier"],
-         old["fetched_at"], old["confidence"], old["ttl_days"], old["kind"],
-         old["revision"] + 1, rel, old["source_id"]),
-    )
-    # Idempotent regardless of whether the row was freshly inserted or already
-    # existed (human edited a file to match other existing content).
-    conn.execute(
-        "UPDATE content SET is_current = 1, protected = 1, vault_path = ?, updated_at = ? "
-        "WHERE hash = ?",
-        (rel, now, new_hash),
-    )
-    conn.execute(
-        "UPDATE content SET is_current = 0, superseded_by = ?, vault_path = NULL, updated_at = ? "
-        "WHERE hash = ?",
-        (new_hash, now, old_hash),
-    )
-    conn.execute(
-        "UPDATE vault_state SET content_hash = ?, rendered_body = ?, rendered_at = ? "
-        "WHERE vault_path = ?",
-        (new_hash, new_body, now, rel),
-    )
-    event_log.append(
-        conn, "vault_edit",
-        {"path": rel, "hash": new_hash, "hash_old": old_hash,
-         "hash_new": new_hash, "diff": diff[:8000]},
-        actor="human",
-    )
-    logger.info("vault_edit recorded: %s (rev %d->%d, hash %s->%s)",
-                rel, old["revision"], old["revision"] + 1, old_hash, new_hash)
+        # A human edit is a first-class new revision, not an in-place body mutation
+        # (#55 — mutating body while keeping the hash breaks content-addressing).
+        # Insert a new current+protected revision addressed by content_hash(new_body),
+        # carry the source metadata forward, supersede the old revision, and repoint
+        # the vault_state projection. protected=1 keeps the poller from superseding
+        # the human's edit (#37).
+        old = conn.execute("SELECT * FROM content WHERE hash = ?", (old_hash,)).fetchone()
+        if old is None:
+            logger.warning("vault_state %s references missing content %s; skipping", rel, old_hash)
+            return
+        # Atomic (#83): the insert + repoint + supersede + projection refresh is a
+        # 4-statement revision swap. A failure partway through would otherwise
+        # leave two current rows (or a vault_state pointing at a missing row);
+        # ROLLBACK leaves the prior revision intact.
+        with transaction(conn):
+            conn.execute(
+                """INSERT OR IGNORE INTO content
+                   (hash, body, title, source_url, source_tier, fetched_at, confidence,
+                    ttl_days, kind, revision, is_current, protected, vault_path, source_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)""",
+                (new_hash, new_body, old["title"], old["source_url"], old["source_tier"],
+                 old["fetched_at"], old["confidence"], old["ttl_days"], old["kind"],
+                 old["revision"] + 1, rel, old["source_id"]),
+            )
+            # Idempotent regardless of whether the row was freshly inserted or already
+            # existed (human edited a file to match other existing content).
+            conn.execute(
+                "UPDATE content SET is_current = 1, protected = 1, vault_path = ?, updated_at = ? "
+                "WHERE hash = ?",
+                (rel, now, new_hash),
+            )
+            conn.execute(
+                "UPDATE content SET is_current = 0, superseded_by = ?, vault_path = NULL, updated_at = ? "
+                "WHERE hash = ?",
+                (new_hash, now, old_hash),
+            )
+            conn.execute(
+                "UPDATE vault_state SET content_hash = ?, rendered_body = ?, rendered_at = ? "
+                "WHERE vault_path = ?",
+                (new_hash, new_body, now, rel),
+            )
+            event_log.append(
+                conn, "vault_edit",
+                {"path": rel, "hash": new_hash, "hash_old": old_hash,
+                 "hash_new": new_hash, "diff": diff[:8000]},
+                actor="human",
+            )
+        logger.info("vault_edit recorded: %s (rev %d->%d, hash %s->%s)",
+                    rel, old["revision"], old["revision"] + 1, old_hash, new_hash)
 
 
 def run() -> None:
