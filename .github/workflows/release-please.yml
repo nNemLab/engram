@@ -22,17 +22,43 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
-      # release-please owns uv.lock's version line directly (see the uv.lock
-      # extra-files entry in release-please-config.json), so the lockfile stays
-      # in sync with the pyproject bump without a separate bot commit. That
-      # second commit used to be pushed with GITHUB_TOKEN, which suppresses CI
-      # (GitHub's recursion guard) and left the release PR's required check
-      # stalled forever. Only the editable root package's `version` changes at
-      # release time — dependency changes already land their own uv.lock delta
-      # in the feature PR — so a single-line bump matches what `uv lock` emits.
+      # Authored with a PAT so the release PR's required checks run.
       - uses: googleapis/release-please-action@v4
         id: release
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # Re-lock uv.lock on the release PR so 'uv run --locked' passes.
+      - name: Check out the release branch
+        if: ${{ steps.release.outputs.pr }}
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ fromJson(steps.release.outputs.pr).headBranchName }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+
+      - name: Install uv
+        if: ${{ steps.release.outputs.pr }}
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: '**/uv.lock'
+
+      - name: Pin Python 3.11
+        if: ${{ steps.release.outputs.pr }}
+        run: uv python install 3.11
+
+      - name: Sync uv.lock to the release version
+        if: ${{ steps.release.outputs.pr }}
+        run: |
+          uv lock
+          if git diff --quiet -- uv.lock; then
+            echo "uv.lock already in sync with the bumped version; nothing to push."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add uv.lock
+          git commit -m 'chore: sync uv.lock to release version'
+          git push
