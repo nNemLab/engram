@@ -1,6 +1,6 @@
 {
   "name": "engram-memory",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Ambient memory for engram: auto-inject calibrated retrieval + priming each turn, and record what was used.",
   "hooks": "./hooks/hooks.json",
   "skills": "./skills/"
