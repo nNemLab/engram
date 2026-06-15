@@ -9,6 +9,10 @@ on:
   pull_request:
   push:
     branches: [main]
+  # The merge queue runs the required check on temporary
+  # gh-readonly-queue/main/... branches; without this trigger the check never
+  # reports and the queue stalls forever.
+  merge_group:
 
 # setup-uv@v6 still bundles a Node 20 entrypoint; opt JS actions into Node 24
 # now (GitHub force-migrates on 2026-06-16 regardless). Clears the deprecation.
@@ -35,7 +39,7 @@ jobs:
       - name: Detect non-doc changes
         id: filter
         run: |
-          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          base="${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}"
           if [ -z "$base" ] || ! git rev-parse -q --verify "$base^{commit}" >/dev/null 2>&1; then
             echo "base unknown — running full suite"
             echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
