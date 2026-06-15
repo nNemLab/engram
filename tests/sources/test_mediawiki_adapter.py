@@ -64,11 +64,9 @@ async def test_first_run_lists_pages_and_filters_globs():
         assert params.get("maxlag") == "5"
         assert params.get("assert") == "anon"
         assert params.get("format") == "json"
-    # Cursor populated with last_rc_at
+    # Cursor populated with last_rc_at only
     cursor = json.loads(src["cursor"])
     assert "last_rc_at" in cursor
-    assert "api_endpoint" in cursor
-    assert cursor["api_endpoint"] == "https://wiki.example.com/api.php"
 
 
 @pytest.mark.asyncio
@@ -183,7 +181,6 @@ async def test_subsequent_run_uses_recentchanges():
     adapter = MediaWikiApiAdapter(_client=httpx.AsyncClient(transport=transport))
     src = _src(cursor=json.dumps({
         "last_rc_at": "2026-05-05T00:00:00Z",
-        "api_endpoint": "https://wiki.example.com/api.php",
     }))
     cands = [c async for c in adapter.fetch(src)]
 
@@ -226,7 +223,6 @@ async def test_recentchanges_empty_yields_zero():
     adapter = MediaWikiApiAdapter(_client=httpx.AsyncClient(transport=transport))
     src = _src(cursor=json.dumps({
         "last_rc_at": "2026-05-05T00:00:00Z",
-        "api_endpoint": "https://wiki.example.com/api.php",
     }))
     cands = [c async for c in adapter.fetch(src)]
     assert cands == []
@@ -265,7 +261,6 @@ async def test_recentchanges_pagination():
     adapter = MediaWikiApiAdapter(_client=httpx.AsyncClient(transport=transport))
     src = _src(cursor=json.dumps({
         "last_rc_at": "2026-05-05T00:00:00Z",
-        "api_endpoint": "https://wiki.example.com/api.php",
     }))
     cands = [c async for c in adapter.fetch(src)]
     titles = sorted(c.title for c in cands)

@@ -126,8 +126,7 @@ async def test_mediawiki_empty_recentchanges_zero_parse_calls():
     src = {
         "id": "t", "url": "https://wiki.example.com",
         "config": json.dumps({"namespaces": [0], "request_interval_ms": 0}),
-        "cursor": json.dumps({"last_rc_at": "2026-05-05T00:00:00Z",
-                              "api_endpoint": "https://wiki.example.com/api.php"}),
+        "cursor": json.dumps({"last_rc_at": "2026-05-05T00:00:00Z"}),
     }
     cands = [c async for c in adapter.fetch(src)]
     assert cands == []
@@ -162,8 +161,7 @@ async def test_mediawiki_one_change_yields_one_parse_call():
     src = {
         "id": "t", "url": "https://wiki.example.com",
         "config": json.dumps({"namespaces": [0], "request_interval_ms": 0}),
-        "cursor": json.dumps({"last_rc_at": "2026-05-05T00:00:00Z",
-                              "api_endpoint": "https://wiki.example.com/api.php"}),
+        "cursor": json.dumps({"last_rc_at": "2026-05-05T00:00:00Z"}),
     }
     cands = [c async for c in adapter.fetch(src)]
     assert len(cands) == 1

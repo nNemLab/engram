@@ -145,7 +145,6 @@ async def poll_one(conn: sqlite3.Connection, source: dict[str, Any]) -> dict[str
         },
         actor="poller",
     )
-    conn.commit()
     return counts
 
 

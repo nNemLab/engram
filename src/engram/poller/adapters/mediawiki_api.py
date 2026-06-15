@@ -88,13 +88,10 @@ class MediaWikiApiAdapter:
                 source_url=f"{wiki_root}/wiki/{url_title}",
                 body=extracted,
                 title=title,
-                fetched_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                metadata={"page_id": None},
             )
 
         source["cursor"] = json.dumps({
             "last_rc_at": new_rc_at,
-            "api_endpoint": api_endpoint,
         })
 
     async def _list_allpages(
@@ -178,12 +175,9 @@ class MediaWikiApiAdapter:
             "prop": "text",
             "disableeditsection": "1",
         }
-        try:
-            result = await fetch_with_politeness(
-                self._client, api_endpoint, extra_params=params, rate_limiter=rate_limiter,
-            )
-        except httpx.HTTPStatusError:
-            raise
+        result = await fetch_with_politeness(
+            self._client, api_endpoint, extra_params=params, rate_limiter=rate_limiter,
+        )
         if result is None:
             return None
         data = json.loads(result.body)
