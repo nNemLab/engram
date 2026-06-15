@@ -235,3 +235,52 @@ def test_dead_letter_record_created(tmp_path, monkeypatch):
         "SELECT last_event_id FROM daemon_cursors WHERE name = 'reactor'"
     ).fetchone()["last_event_id"]
     assert cursor == fail_id
+
+
+# ---------------------------------------------------------------------------
+# (d) Even if the dead-letter WRITE itself raises, the reactor must still advance
+#     past the budget-exhausted event and process later events -- a DLQ write
+#     failure must not permanently re-block the stream. (Fails on pre-fix code,
+#     where the exception escaped to the tick-level handler and wedged the loop.)
+# ---------------------------------------------------------------------------
+
+def test_dead_letter_write_failure_still_advances(tmp_path, monkeypatch):
+    from engram import log as event_log
+    from engram.dedup import content_hash
+    from engram.reactor import reactor as rmod
+
+    conn = _conn(tmp_path)
+    fail_id = event_log.append(conn, "ingested", {"hash": content_hash("body fail")})
+    ok_id = event_log.append(conn, "ingested", {"hash": content_hash("body ok")})
+    conn.commit()
+
+    monkeypatch.setattr(rmod, "get_connection", lambda: conn)
+    monkeypatch.setattr(rmod, "MAX_HANDLER_ATTEMPTS", 3)
+
+    calls = []
+
+    def _deterministic(conn, evt):
+        calls.append(evt.id)
+        if evt.id == fail_id:
+            raise RuntimeError("permanently bad payload")
+
+    monkeypatch.setitem(rmod.HANDLERS, "ingested", _deterministic)
+
+    # The dead-letter write itself blows up (DB error / lock / schema drift).
+    def _boom_dead_letter(*a, **k):
+        raise sqlite3.OperationalError("dead_letter write exploded")
+
+    monkeypatch.setattr(rmod, "_dead_letter", _boom_dead_letter)
+
+    # 3 ticks: budget is spent on tick 3, where the dead-letter write fails.
+    monkeypatch.setattr(rmod.time, "sleep", _stopper(3))
+    with pytest.raises(_StopTick):
+        rmod.run()
+
+    # Despite the failed DLQ write, the cursor advanced PAST the exhausted event
+    # and the later event was processed -- the stream is NOT permanently blocked.
+    assert ok_id in calls
+    cursor = conn.execute(
+        "SELECT last_event_id FROM daemon_cursors WHERE name = 'reactor'"
+    ).fetchone()["last_event_id"]
+    assert cursor == ok_id

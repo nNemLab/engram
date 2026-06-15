@@ -101,12 +101,27 @@ def run() -> None:
                         if attempts >= MAX_HANDLER_ATTEMPTS:
                             # Budget exhausted: record it and advance past the event
                             # so later events are no longer head-of-line-blocked.
-                            _dead_letter(conn, evt, attempts, exc)
-                            logger.error(
-                                "handler %s failed %d times for event %d; "
-                                "dead-lettering and advancing past it",
-                                evt.type, attempts, evt.id,
-                            )
+                            # The cursor MUST advance even if the dead-letter WRITE
+                            # itself fails (DB error/lock/schema drift); otherwise the
+                            # exception would escape to the tick-level handler, the
+                            # cursor would stay put, and this same event would be
+                            # retried forever -- re-creating the exact head-of-line
+                            # block we're fixing. Losing/logging one DLQ record is
+                            # strictly better than wedging the whole reactor.
+                            try:
+                                _dead_letter(conn, evt, attempts, exc)
+                                logger.error(
+                                    "handler %s failed %d times for event %d; "
+                                    "dead-lettering and advancing past it",
+                                    evt.type, attempts, evt.id,
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "handler %s failed %d times for event %d AND the "
+                                    "dead-letter write failed; advancing past it anyway "
+                                    "to keep the stream unblocked (DLQ record lost)",
+                                    evt.type, attempts, evt.id,
+                                )
                             last = evt.id
                             continue
                         # Under budget: stop the batch and retry on the next tick
