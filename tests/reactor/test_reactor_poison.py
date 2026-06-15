@@ -90,7 +90,7 @@ def test_run_skips_poison_event_between_good_events(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rmod.time, "sleep", _stop)
     with pytest.raises(_StopTick):
-        rmod.run()
+        rmod._run_loop(conn)
 
     # Both good events were embedded despite the poison row in between.
     assert conn.execute(
@@ -133,7 +133,7 @@ def test_poison_event_does_not_trigger_handlers(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rmod.time, "sleep", _stop)
     with pytest.raises(_StopTick):
-        rmod.run()
+        rmod._run_loop(conn)
 
     # No handler was dispatched for the poison event.
     assert ingest_calls == []
@@ -175,7 +175,7 @@ def test_good_ingested_dispatches_handler_poison_does_not(tmp_path, monkeypatch)
 
     monkeypatch.setattr(rmod.time, "sleep", _stop)
     with pytest.raises(_StopTick):
-        rmod.run()
+        rmod._run_loop(conn)
 
     # Only the good event triggered the handler; poison was skipped.
     assert ingest_calls == [good_id]

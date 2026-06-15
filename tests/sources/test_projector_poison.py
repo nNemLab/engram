@@ -76,7 +76,7 @@ def test_run_skips_poison_event_between_good_events(conn, tmp_path, monkeypatch)
     # the single batch of events has been drained.
     monkeypatch.setattr(pmod.time, "sleep", _stop)
     with pytest.raises(_StopTick):
-        pmod.run()
+        pmod._run_loop(conn)
 
     # The later good event (B) was still processed despite the poison row.
     assert conn.execute(

@@ -179,13 +179,38 @@ async def _poll_due(
     await asyncio.gather(*(_run(src) for src in sources))
 
 
+async def _aclose_adapters() -> None:
+    """Close every adapter that holds an httpx.AsyncClient (#92).
+
+    Adapters opt in by exposing an async ``aclose()``; missing or failing closes
+    are tolerated so one stuck adapter can't block the rest of shutdown.
+    """
+    for adapter in ADAPTERS.values():
+        aclose = getattr(adapter, "aclose", None)
+        if aclose is None:
+            continue
+        try:
+            await aclose()
+        except Exception:  # noqa: BLE001
+            logger.exception("adapter aclose failed: %s", getattr(adapter, "name", adapter))
+
+
 async def run() -> None:
     load_config()
     conn = get_connection()
     logger.info("poller starting")
-    while True:
-        try:
-            await _poll_due(conn, select_due(conn))
-        except Exception:
-            logger.exception("poller tick failed")
-        await asyncio.sleep(60)
+    try:
+        while True:
+            try:
+                await _poll_due(conn, select_due(conn))
+            except Exception:
+                logger.exception("poller tick failed")
+            await asyncio.sleep(60)
+    finally:
+        # Graceful shutdown (#92): runs only between ticks (at the asyncio.sleep
+        # boundary) or after the in-flight _poll_due gather unwinds on cancel, so
+        # no concurrent poll_one is touching these resources when we close them.
+        # Close adapter HTTP clients and the long-lived DB connection so the
+        # daemon doesn't leak file descriptors / WAL sidecars.
+        await _aclose_adapters()
+        conn.close()
