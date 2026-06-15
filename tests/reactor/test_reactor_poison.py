@@ -67,7 +67,10 @@ def test_run_skips_poison_event_between_good_events(tmp_path, monkeypatch):
     # Patch load_config where the handlers import it.
     monkeypatch.setattr(H, "load_config", lambda: fake_cfg)
     # Mock embedder/chunker so on_ingested doesn't crash on good events.
-    monkeypatch.setattr(H.embedder, "embed_one", lambda text: b"\x00" * (DIM * 4))
+    # Give distinct vectors to A and B so the near-dup tombstone path is NOT
+    # exercised — keeps this test focused on poison-skip / cursor-advance.
+    monkeypatch.setattr(H.embedder, "embed_one",
+                        lambda text: b"\x00" * DIM * 4 if "A" in text else b"\xff" * DIM * 4)
     monkeypatch.setattr(H.chunker, "chunk_markdown", lambda *a, **k: ["chunk"])
     monkeypatch.setattr(H.chunker, "embed_prefix", lambda body, n: body)
 
@@ -80,10 +83,10 @@ def test_run_skips_poison_event_between_good_events(tmp_path, monkeypatch):
     with pytest.raises(_StopTick):
         rmod.run()
 
-    # The later good event (B) was still processed despite the poison row.
+    # Both good events were embedded despite the poison row in between.
     assert conn.execute(
-        "SELECT 1 FROM embeddings WHERE content_hash = ?", (h_b,)
-    ).fetchone() is not None
+        "SELECT count(*) FROM embeddings",
+    ).fetchone()[0] == 2
 
     # The cursor advanced PAST the poison row (loop is not stuck).
     cursor = conn.execute(
@@ -93,13 +96,12 @@ def test_run_skips_poison_event_between_good_events(tmp_path, monkeypatch):
 
 
 def test_poison_event_does_not_trigger_handlers(tmp_path, monkeypatch):
-    """A poison row should skip handler dispatch entirely."""
+    """A poison row should skip handler dispatch; good events must still dispatch."""
     from engram import log as event_log
-    from engram.reactor import handlers as H
     from engram.reactor import reactor as rmod
 
     conn = _conn(tmp_path)
-    _seed_content(conn, "hash_X", "body X")
+    _seed_content(conn, "hash_good", "body good")
 
     # Poison event only — no good events at all.
     poison_id = event_log.append(conn, "ingested", {"hash": "unused"})
@@ -108,15 +110,14 @@ def test_poison_event_does_not_trigger_handlers(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rmod, "get_connection", lambda: conn)
 
-    # Patch on_ingested so we can verify it is never called.
-    ingest_called = []
-    real_on_ingested = H.on_ingested
+    # Patch the ACTUAL dispatch target: reactor.HANDLERS (bound at import time),
+    # NOT H.on_ingested.  Patching the dict guarantees the call-site uses our stub.
+    ingest_calls = []
 
     def _count_calls(conn, evt):
-        ingest_called.append(evt.id)
-        return real_on_ingested(conn, evt)
+        ingest_calls.append(evt.id)
 
-    monkeypatch.setattr(H, "on_ingested", _count_calls)
+    monkeypatch.setitem(rmod.HANDLERS, "ingested", _count_calls)
 
     def _stop(_):
         raise _StopTick
@@ -126,9 +127,51 @@ def test_poison_event_does_not_trigger_handlers(tmp_path, monkeypatch):
         rmod.run()
 
     # No handler was dispatched for the poison event.
-    assert ingest_called == []
+    assert ingest_calls == []
 
     # Cursor still advanced past the poison row.
+    cursor = conn.execute(
+        "SELECT last_event_id FROM daemon_cursors WHERE name = 'reactor'"
+    ).fetchone()["last_event_id"]
+    assert cursor == poison_id
+
+
+def test_good_ingested_dispatches_handler_poison_does_not(tmp_path, monkeypatch):
+    """Positive control: one good event increments counter; poison does not."""
+    from engram import log as event_log
+    from engram.dedup import content_hash
+    from engram.reactor import reactor as rmod
+
+    conn = _conn(tmp_path)
+    h_good = content_hash("body good")
+    _seed_content(conn, h_good, "body good")
+
+    # event order: good (A) -> poison
+    good_id = event_log.append(conn, "ingested", {"hash": h_good})
+    poison_id = event_log.append(conn, "ingested", {"hash": "unused"})
+    conn.execute("UPDATE events SET payload = ? WHERE id = ?", ("{broken", poison_id))
+    conn.commit()
+
+    monkeypatch.setattr(rmod, "get_connection", lambda: conn)
+
+    ingest_calls = []
+
+    def _count_calls(conn, evt):
+        ingest_calls.append(evt.id)
+
+    monkeypatch.setitem(rmod.HANDLERS, "ingested", _count_calls)
+
+    def _stop(_):
+        raise _StopTick
+
+    monkeypatch.setattr(rmod.time, "sleep", _stop)
+    with pytest.raises(_StopTick):
+        rmod.run()
+
+    # Only the good event triggered the handler; poison was skipped.
+    assert ingest_calls == [good_id]
+
+    # Cursor advanced past both events.
     cursor = conn.execute(
         "SELECT last_event_id FROM daemon_cursors WHERE name = 'reactor'"
     ).fetchone()["last_event_id"]
