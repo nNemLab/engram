@@ -20,7 +20,13 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from watchdog.events import FileCreatedEvent, FileModifiedEvent, FileSystemEventHandler
+from watchdog.events import (
+    FileCreatedEvent,
+    FileDeletedEvent,
+    FileModifiedEvent,
+    FileMovedEvent,
+    FileSystemEventHandler,
+)
 from watchdog.observers import Observer
 
 from .. import log as event_log
@@ -77,20 +83,36 @@ def _ignored(rel: str, patterns: list[str]) -> bool:
 
 
 class _Handler(FileSystemEventHandler):
-    def __init__(self, vault: Path, debouncer: _Debouncer, ignore: list[str]) -> None:
+    def __init__(
+        self,
+        vault: Path,
+        debouncer: _Debouncer,
+        ignore: list[str],
+        conn: sqlite3.Connection,
+    ) -> None:
         self.vault = vault
         self.debouncer = debouncer
         self.ignore = ignore
+        self.conn = conn
 
-    def _maybe(self, path: str) -> None:
+    def _rel_for(self, path: str) -> str | None:
         p = Path(path)
-        if not p.is_file() or p.suffix != ".md":
-            return
+        if p.suffix != ".md":
+            return None
         try:
             rel = str(p.relative_to(self.vault))
         except ValueError:
-            return
+            return None
         if _ignored(rel, self.ignore):
+            return None
+        return rel
+
+    def _maybe(self, path: str) -> None:
+        p = Path(path)
+        if not p.is_file():
+            return
+        rel = self._rel_for(path)
+        if rel is None:
             return
         self.debouncer.trigger(rel, rel, str(p))
 
@@ -101,6 +123,84 @@ class _Handler(FileSystemEventHandler):
     def on_created(self, event: FileCreatedEvent) -> None:
         if not event.is_directory:
             self._maybe(event.src_path)
+
+    def on_deleted(self, event: FileDeletedEvent) -> None:
+        if event.is_directory:
+            return
+        rel = self._rel_for(event.src_path)
+        if rel is None:
+            return
+        _on_delete(self.conn, rel)
+
+    def on_moved(self, event: FileMovedEvent) -> None:
+        if event.is_directory:
+            return
+        src_rel = self._rel_for(event.src_path)
+        dest_rel = self._rel_for(event.dest_path)
+
+        if src_rel and dest_rel:
+            _on_move(self.conn, src_rel, dest_rel)
+            return
+        if src_rel and not dest_rel:
+            _on_delete(self.conn, src_rel)
+            return
+        if dest_rel and not src_rel:
+            # A move from outside the watched markdown set into it behaves as
+            # a new file appearing in the vault.
+            self.debouncer.trigger(dest_rel, dest_rel, event.dest_path)
+
+
+def _on_delete(conn: sqlite3.Connection, rel: str) -> None:
+    with db_lock():
+        with transaction(conn):
+            conn.execute("DELETE FROM vault_state WHERE vault_path = ?", (rel,))
+            conn.execute(
+                "UPDATE content SET vault_path = NULL WHERE vault_path = ?",
+                (rel,),
+            )
+
+
+def _on_move(conn: sqlite3.Connection, src_rel: str, dest_rel: str) -> None:
+    with db_lock():
+        with transaction(conn):
+            row = conn.execute(
+                "SELECT content_hash FROM vault_state WHERE vault_path = ?",
+                (src_rel,),
+            ).fetchone()
+            if not row:
+                return
+            conn.execute(
+                "UPDATE vault_state SET vault_path = ? WHERE vault_path = ?",
+                (dest_rel, src_rel),
+            )
+            conn.execute(
+                "UPDATE content SET vault_path = ? WHERE hash = ?",
+                (dest_rel, row["content_hash"]),
+            )
+
+
+def _reconcile_startup(conn: sqlite3.Connection, vault: Path, ignore: list[str]) -> None:
+    current_paths: set[str] = set()
+    for p in vault.rglob("*.md"):
+        if not p.is_file():
+            continue
+        rel = str(p.relative_to(vault))
+        if _ignored(rel, ignore):
+            continue
+        current_paths.add(rel)
+
+    with db_lock():
+        known = {
+            row["vault_path"]
+            for row in conn.execute("SELECT vault_path FROM vault_state").fetchall()
+            if not _ignored(row["vault_path"], ignore)
+        }
+
+    for rel in sorted(current_paths):
+        _on_change(conn, rel, str(vault / rel))
+
+    for rel in sorted(known - current_paths):
+        _on_delete(conn, rel)
 
 
 def _on_change(conn: sqlite3.Connection, rel: str, abs_path: str) -> None:
@@ -273,7 +373,8 @@ def run() -> None:
     conn = get_connection()
 
     debouncer = _Debouncer(cfg.watcher.debounce_ms, lambda rel, abs_p: _on_change(conn, rel, abs_p))
-    handler = _Handler(vault, debouncer, cfg.watcher.ignore)
+    _reconcile_startup(conn, vault, cfg.watcher.ignore)
+    handler = _Handler(vault, debouncer, cfg.watcher.ignore, conn)
     observer = Observer()
     observer.schedule(handler, str(vault), recursive=True)
     observer.start()

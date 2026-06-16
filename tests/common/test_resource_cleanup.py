@@ -282,6 +282,7 @@ def test_watcher_run_finalizer_stops_observer_and_closes_conn(tmp_path, monkeypa
             state["joined"] = True
 
     monkeypatch.setattr(wmod, "Observer", _FakeObserver)
+    monkeypatch.setattr(wmod, "_reconcile_startup", lambda *_args, **_kwargs: None)
 
     def _boom(_seconds):
         raise KeyboardInterrupt
