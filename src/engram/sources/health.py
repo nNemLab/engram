@@ -10,6 +10,7 @@ is used for liveness/overdue checks (matching `engram.common.time.utcnow_iso`).
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC, datetime
 from typing import Any
 
 from ..common.time import utcnow_iso
@@ -31,9 +32,9 @@ def _derive_status(
     paused    : paused.
     ok        : everything else.
     """
-    success_is_stale = last_success_at is None or (
-        last_polled_at is not None and last_success_at < last_polled_at
-    )
+    poll_dt = _parse_iso_z(last_polled_at)
+    succ_dt = _parse_iso_z(last_success_at)
+    success_is_stale = succ_dt is None or (poll_dt is not None and succ_dt < poll_dt)
     if error_count > 0 and success_is_stale:
         return "erroring"
     if overdue:
@@ -41,6 +42,20 @@ def _derive_status(
     if paused:
         return "paused"
     return "ok"
+
+
+def _parse_iso_z(ts: str | None) -> datetime | None:
+    if not ts:
+        return None
+    if ts.endswith("Z"):
+        ts = ts[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def source_health(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -51,6 +66,7 @@ def source_health(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     status). Ordered by source id for stable output.
     """
     now = utcnow_iso()
+    now_dt = _parse_iso_z(now)
     records: list[dict[str, Any]] = []
 
     rows = conn.execute(
@@ -65,10 +81,12 @@ def source_health(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         paused = bool(d["paused"])
         next_poll_at = d["next_poll_at"]
 
+        next_poll_dt = _parse_iso_z(next_poll_at)
         overdue = (
             not paused
-            and next_poll_at is not None
-            and next_poll_at < now
+            and next_poll_dt is not None
+            and now_dt is not None
+            and next_poll_dt < now_dt
         )
 
         counts = conn.execute(

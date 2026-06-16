@@ -6,7 +6,7 @@ import pytest
 from engram.research import arxiv
 
 
-def test_search_skips_bad_result_entries(monkeypatch):
+def test_search_skips_bad_result_entries(monkeypatch, caplog):
     class FakeClient:
         def results(self, _query):
             yield SimpleNamespace(
@@ -43,6 +43,7 @@ def test_search_skips_bad_result_entries(monkeypatch):
 
     assert len(results) == 1
     assert results[0].arxiv_id == "1234.5678"
+    assert any("dropping malformed arXiv entry" in rec.message for rec in caplog.records)
 
 
 def test_search_does_not_quote_field_prefixed_query(monkeypatch):

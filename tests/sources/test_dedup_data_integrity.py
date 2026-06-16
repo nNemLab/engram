@@ -105,6 +105,15 @@ def test_readding_tombstoned_body_resurrects_it(conn):
     assert json.loads(ing["payload"])["hash"] == h
 
 
+def test_gate_rejects_invalid_inputs(conn):
+    with pytest.raises(ValueError, match="non-empty"):
+        dedup.gate(conn, body="   ", kind="kb")
+    with pytest.raises(ValueError, match="confidence"):
+        dedup.gate(conn, body="ok", kind="kb", confidence=1.2)
+    with pytest.raises(ValueError, match="ttl_days"):
+        dedup.gate(conn, body="ok", kind="kb", ttl_days=-1)
+
+
 def test_live_exact_dup_is_not_resurrected(conn):
     """A non-tombstoned exact match stays an `exact_dup` no-op (no event)."""
     dedup.gate(conn, body="alpha body note", kind="kb")
@@ -294,6 +303,81 @@ def test_supersede_insert_ignored_does_not_zero_out_source_url(conn, monkeypatch
     ).fetchone()
     assert old["is_current"] == 0
     assert old["superseded_by"] == h
+
+
+def test_find_near_checks_multiple_candidates_and_threshold_inclusive(conn):
+    q = b"embedding"
+    first = {"content_hash": "stale", "distance": 0.1}
+    second = {"content_hash": "live", "distance": 0.2}
+
+    class Cur:
+        def fetchall(self):
+            return [first, second]
+
+    class FakeConn:
+        def execute(self, sql, params=()):
+            if "FROM embeddings" in sql:
+                return Cur()
+            h = params[0]
+            if h == "live":
+                return type("R", (), {"fetchone": lambda self: {"ok": 1}})()
+            return type("R", (), {"fetchone": lambda self: None})()
+
+    out = dedup.find_near(FakeConn(), q, threshold=0.98)
+    assert out is not None
+    assert out[0] == "live"
+    assert out[1] >= 0.98
+
+
+def test_merged_event_includes_similarity_and_contradicted_keeps_correlation_id(conn, monkeypatch):
+    dedup.gate(conn, body="v1", source_url="https://x/protected", kind="research", source_tier="vendor-doc")
+    conn.execute("UPDATE content SET protected = 1 WHERE source_url = 'https://x/protected'")
+    dedup.gate(
+        conn,
+        body="v2",
+        source_url="https://x/protected",
+        kind="research",
+        source_tier="vendor-doc",
+        correlation_id="cid-123",
+    )
+    contradicted = conn.execute(
+        "SELECT payload, correlation_id FROM events WHERE type='contradicted' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert contradicted["correlation_id"] == "cid-123"
+
+    monkeypatch.setattr(dedup, "find_near", lambda *_a, **_k: ("kept-hash", 0.987))
+    out = dedup.gate(conn, body="near body", kind="kb", embedding=b"emb", correlation_id="cid-m")
+    assert out.outcome == "near_dup"
+    merged = conn.execute("SELECT payload FROM events WHERE type='merged' ORDER BY id DESC LIMIT 1").fetchone()
+    payload = json.loads(merged["payload"])
+    assert payload["similarity"] == pytest.approx(0.987)
+
+
+def test_resolve_keep_mine_reraises_non_missing_embeddings_table_errors(conn):
+    h_human = content_hash("human")
+    h_up = content_hash("upstream")
+    conn.execute(
+        "INSERT INTO content (hash, body, source_url, source_tier, kind, revision, is_current, protected) "
+        "VALUES (?, 'human', 'https://x/u', 'vendor-doc', 'research', 1, 1, 1)",
+        (h_human,),
+    )
+    conn.execute(
+        "INSERT INTO content (hash, body, source_url, source_tier, kind, revision, is_current) "
+        "VALUES (?, 'upstream', 'https://x/u', 'vendor-doc', 'research', 2, 0)",
+        (h_up,),
+    )
+    conn.execute(
+        "INSERT INTO contradictions (hash_a, hash_b, detected_by) VALUES (?, ?, 'poller')",
+        (h_human, h_up),
+    )
+
+    # Replace the optional embeddings table with a non-writable view so
+    # DELETE hits an OperationalError that is NOT "no such table".
+    conn.execute("DROP TABLE IF EXISTS embeddings")
+    conn.execute("CREATE VIEW embeddings AS SELECT hash AS content_hash FROM content")
+
+    with pytest.raises(sqlite3.OperationalError, match="view"):
+        dedup.resolve_supersede(conn, h_human, "keep_mine", tombstone_upstream=True)
 
 
 def test_supersede_path_invariant_one_current_after_normal_swap(conn):

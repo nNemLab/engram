@@ -13,9 +13,14 @@ from typing import Any
 from ..common.time import utcnow_iso
 
 
-def _parse_iso(ts: str) -> datetime:
+def _parse_iso(ts: str | None) -> datetime | None:
     """Parse an ISO-8601 'Z'-suffixed UTC timestamp into an aware datetime."""
-    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     return dt
@@ -59,12 +64,17 @@ def reflect(conn: sqlite3.Connection, *,
 
     # --- idle active goals ---------------------------------------------
     now = _parse_iso(utcnow_iso())
+    if now is None:
+        now = datetime.now(UTC)
     active = conn.execute(
         "SELECT id, text, updated_at FROM goals WHERE status = 'active'"
     ).fetchall()
     idle = []
     for g in active:
-        days = (now - _parse_iso(g["updated_at"])).total_seconds() / 86400.0
+        updated = _parse_iso(g["updated_at"])
+        if updated is None:
+            continue
+        days = (now - updated).total_seconds() / 86400.0
         if days >= idle_days:
             idle.append({
                 "id": g["id"],

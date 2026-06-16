@@ -114,6 +114,23 @@ def test_hybrid_search_excludes_non_current_rows(tmp_path, monkeypatch):
     assert [h.hash for h in hits] == ["new"]
 
 
+def test_since_uses_datetime_not_lexicographic(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    conn = fresh_conn(tmp_path)
+    # Lexicographically, "...00Z" > "...00.100Z" though chronologically it is older.
+    conn.execute("INSERT INTO content (hash,title,body,source_url,source_tier,fetched_at,"
+                 "confidence,kind,tombstoned) VALUES "
+                 "('old','Old','alpha term',NULL,'manual','2026-03-01T00:00:00Z',0.8,'kb',0)")
+    conn.execute("INSERT INTO content (hash,title,body,source_url,source_tier,fetched_at,"
+                 "confidence,kind,tombstoned) VALUES "
+                 "('new','New','alpha term',NULL,'manual','2026-03-01T00:00:00.200Z',0.8,'kb',0)")
+    import engram.rag.query as q
+    monkeypatch.setattr(q, "embed_one", lambda s: b"x")
+    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [("old", 0.80), ("new", 0.80)])
+    hits = q.hybrid_search(conn, "alpha", log_retrieval=False, since="2026-03-01T00:00:00.100Z")
+    assert [h.hash for h in hits] == ["new"]
+
+
 def test_since_filters_old_entries(tmp_path, monkeypatch):
     _stub_cfg(monkeypatch)
     conn = fresh_conn(tmp_path)
@@ -159,6 +176,20 @@ def test_since_and_until_bound_a_window(tmp_path, monkeypatch):
     assert [h.hash for h in hits] == ["mid"]
 
 
+def test_since_drops_rows_with_invalid_timestamps_when_bounded(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    conn = fresh_conn(tmp_path)
+    conn.execute("INSERT INTO content (hash,title,body,source_url,source_tier,fetched_at,"
+                 "confidence,kind,tombstoned) VALUES "
+                 "('bad','Bad','alpha term',NULL,'manual','not-iso',0.8,'kb',0)")
+    _add(conn, "good", "Good", "alpha term")
+    import engram.rag.query as q
+    monkeypatch.setattr(q, "embed_one", lambda s: b"x")
+    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [("bad", 0.80), ("good", 0.80)])
+    hits = q.hybrid_search(conn, "alpha", log_retrieval=False, since="2026-01-01T00:00:00Z")
+    assert [h.hash for h in hits] == ["good"]
+
+
 def test_level_controls_body_length(tmp_path, monkeypatch):
     _stub_cfg(monkeypatch)
     conn = fresh_conn(tmp_path)
@@ -167,9 +198,33 @@ def test_level_controls_body_length(tmp_path, monkeypatch):
     monkeypatch.setattr(q, "embed_one", lambda s: b"x")
     monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [("h1", 0.80)])
     snip = q.hybrid_search(conn, "word", log_retrieval=False, level="snippet")[0]
+    section = q.hybrid_search(conn, "word", log_retrieval=False, level="section")[0]
     full = q.hybrid_search(conn, "word", log_retrieval=False, level="full")[0]
     assert len(snip.body) < len(full.body)
     assert len(snip.body) <= 320
+    assert len(section.body) <= 1200
+    assert len(section.body) <= len(full.body)
+
+
+def test_hybrid_search_refills_after_filtering(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    conn = fresh_conn(tmp_path)
+    for i in range(6):
+        tier = "forum" if i < 4 else "manual"
+        _add(conn, f"h{i}", f"T{i}", "alpha", tier=tier)
+    import engram.rag.query as q
+    monkeypatch.setattr(q, "embed_one", lambda s: b"x")
+    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [(f"h{i}", 0.8) for i in range(6)])
+
+    hits = q.hybrid_search(
+        conn,
+        "alpha",
+        top_k=2,
+        log_retrieval=False,
+        exclude_source_tiers=["forum"],
+    )
+    assert len(hits) == 2
+    assert {h.hash for h in hits} == {"h4", "h5"}
 
 
 def test_tier_weight_falls_back_to_defaults_then_half():
@@ -221,6 +276,41 @@ def test_relevant_outranks_higher_confidence_irrelevant(tmp_path, monkeypatch):
     order = [h.hash for h in hits]
     assert order.index("rel") < order.index("irr"), \
         "dense-more-relevant must outrank higher-confidence-but-less-relevant"
+
+
+def test_confidence_decay_disabled_when_recency_score_enabled(tmp_path, monkeypatch):
+    conn = fresh_conn(tmp_path)
+    conn.execute(
+        "INSERT INTO content (hash, title, body, source_url, source_tier, fetched_at, "
+        "confidence, kind, tombstoned) VALUES (?,?,?,?,?,?,?,?,0)",
+        ("old", "Old", "alpha", None, "manual", "2026-01-01T00:00:00Z", 0.8, "kb"),
+    )
+    conn.execute(
+        "INSERT INTO content (hash, title, body, source_url, source_tier, fetched_at, "
+        "confidence, kind, tombstoned) VALUES (?,?,?,?,?,?,?,?,0)",
+        ("new", "New", "alpha", None, "manual", "2026-06-01T00:00:00Z", 0.8, "kb"),
+    )
+    import engram.rag.query as q
+
+    monkeypatch.setattr(q, "datetime", SimpleNamespace(
+        now=lambda tz=None: datetime(2026, 6, 10, tzinfo=UTC),
+        fromisoformat=datetime.fromisoformat,
+    ))
+    monkeypatch.setattr(q, "embed_one", lambda s: b"x")
+    monkeypatch.setattr(q, "_vector_hits", lambda conn, emb, k: [("old", 0.90), ("new", 0.89)])
+
+    _stub_cfg(
+        monkeypatch,
+        confidence=SimpleNamespace(
+            source_tier_weights={},
+            recency_half_life_days=1,
+            recency_score_enabled=True,
+            recency_score_weight=0.0,
+            recency_score_half_life_days=30,
+        ),
+    )
+    hits = q.hybrid_search(conn, "alpha", log_retrieval=False)
+    assert [h.hash for h in hits][:2] == ["old", "new"]
 
 
 def test_recency_score_prefers_fresher_docs(tmp_path, monkeypatch):

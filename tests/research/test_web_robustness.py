@@ -33,7 +33,7 @@ async def test_search_async_dedups_urls_before_fetch(monkeypatch):
 
     monkeypatch.setattr(web, "_searxng_query", fake_searxng_query)
     monkeypatch.setattr(web, "_fetch_one", fake_fetch_one)
-    monkeypatch.setattr(web, "_extract", lambda html: html)
+    monkeypatch.setattr(web, "_extract", lambda html, **_: html)
     monkeypatch.setattr(web.rerank, "score", lambda query, passages: [1.0] * len(passages))
     monkeypatch.setattr(
         web,
@@ -45,6 +45,30 @@ async def test_search_async_dedups_urls_before_fetch(monkeypatch):
 
     assert len(hits) == 2
     assert fetched_urls == ["https://example.com/a", "https://example.com/b"]
+
+
+def test_fetch_one_logs_and_returns_empty_on_failure(monkeypatch, caplog):
+    class FakeClient:
+        pass
+
+    async def boom(*_a, **_k):
+        raise RuntimeError("network")
+
+    monkeypatch.setattr(web.safe_fetch, "get_async", boom)
+
+    out = asyncio.run(web._fetch_one(FakeClient(), "https://example.com/fail"))
+
+    assert out == ""
+    assert any("fetch failed" in rec.message for rec in caplog.records)
+
+
+def test_extract_logs_and_returns_empty_on_failure(monkeypatch, caplog):
+    monkeypatch.setattr(web.trafilatura, "extract", lambda *_a, **_k: (_ for _ in ()).throw(ValueError("bad")))
+
+    out = web._extract("<html>broken</html>", url="https://example.com/bad")
+
+    assert out == ""
+    assert any("extract failed" in rec.message for rec in caplog.records)
 
 
 async def test_search_async_bounds_fetch_fanout(monkeypatch):
@@ -69,7 +93,7 @@ async def test_search_async_bounds_fetch_fanout(monkeypatch):
 
     monkeypatch.setattr(web, "_searxng_query", fake_searxng_query)
     monkeypatch.setattr(web, "_fetch_one", fake_fetch_one)
-    monkeypatch.setattr(web, "_extract", lambda html: html)
+    monkeypatch.setattr(web, "_extract", lambda html, **_: html)
     monkeypatch.setattr(web.rerank, "score", lambda query, passages: [1.0] * len(passages))
     monkeypatch.setattr(
         web,

@@ -110,6 +110,20 @@ def test_brief_renders_deterministically(tmp_path):
     assert "ship docker" in brief
 
 
+def test_reflect_skips_goals_with_invalid_updated_at(tmp_path):
+    conn = fresh_conn(tmp_path)
+    now = datetime.now(UTC)
+    _add_goal(conn, "good", "good goal", status="active", updated_at=_iso(now - timedelta(days=14)))
+    _add_goal(conn, "bad", "bad goal", status="active", updated_at="not-a-timestamp")
+
+    from engram.rag.reflect import reflect
+
+    out = reflect(conn, idle_days=10)
+    ids = [g["id"] for g in out["idle_goals"]["sample"]]
+    assert "good" in ids
+    assert "bad" not in ids
+
+
 def test_brief_quiet_when_nothing(tmp_path):
     conn = fresh_conn(tmp_path)
     from engram.rag.reflect import reflect

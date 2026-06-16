@@ -7,6 +7,7 @@ relevance-ranked for the specific query.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 
 import httpx
@@ -25,6 +26,8 @@ class WebResult:
     score: float          # cross-encoder relevance score
     engines: list[str]    # which SearXNG engines returned this URL
 
+
+logger = logging.getLogger("engram.research.web")
 
 _DEFAULT_TIMEOUT = 25.0
 _FETCH_TIMEOUT = 12.0
@@ -61,17 +64,23 @@ async def _fetch_one(client: httpx.AsyncClient, url: str) -> str:
         media_type = r.headers.get("content-type", "").split(";", 1)[0].strip().lower()
         if r.status_code == 200 and media_type in _ALLOWED_MEDIA_TYPES:
             return r.text
-    except Exception:
+    except Exception as exc:
+        logger.warning("fetch failed; returning empty body", extra={"url": url, "cause": str(exc)},
+                       exc_info=True)
         return ""
+    logger.warning("fetch yielded unsupported response; returning empty body",
+                   extra={"url": url})
     return ""
 
 
-def _extract(html: str) -> str:
+def _extract(html: str, *, url: str | None = None) -> str:
     if not html:
         return ""
     try:
         return trafilatura.extract(html, include_comments=False, include_tables=False) or ""
-    except Exception:
+    except Exception as exc:
+        logger.warning("extract failed; returning empty body",
+                       extra={"url": url, "cause": str(exc)}, exc_info=True)
         return ""
 
 
@@ -106,7 +115,7 @@ async def _search_async(query: str, k: int, max_candidates: int) -> list[WebResu
 
         bodies = await asyncio.gather(*[_fetch_bounded(r["url"]) for r in deduped_raw])
 
-    extracted = [_extract(b) for b in bodies]
+    extracted = [_extract(b, url=r["url"]) for r, b in zip(deduped_raw, bodies)]
 
     # Build candidate WebResult list. Use snippet as fallback when extraction
     # produced nothing — better to rerank a snippet than to drop the entry.
