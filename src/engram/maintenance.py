@@ -482,6 +482,7 @@ def reembed(
     *,
     batch_size: int = 64,
     embed_char_cap: int | None = None,
+    lock_timeout_ms: int = 5000,
 ) -> dict[str, Any]:
     """Re-embed the live corpus at `new_dim`, replacing the `embeddings` table.
 
@@ -489,10 +490,12 @@ def reembed(
     #43). The canonical event log is the source of truth; embeddings are a
     derived index, so they can be rebuilt from `content` bodies at will:
 
-      1. Drop the existing `embeddings` vec0 table and recreate it at `new_dim`.
-      2. Stream every non-tombstoned `content` row, embed its body via the
-         injected `embed_many`, and insert keyed by `content.hash`. Tombstoned
-         rows are skipped — they are never retrieved, so they need no vector.
+      1. Read every non-tombstoned `content` row and embed its body via the
+         injected `embed_many` — with NO write lock held (issue #161). Tombstoned
+         rows are skipped; they are never retrieved, so they need no vector.
+      2. In a brief, bounded transaction, drop the existing `embeddings` vec0
+         table, recreate it at `new_dim`, and insert the precomputed vectors
+         keyed by `content.hash`.
 
     The embedder is injected (not imported) so this stays free of the heavy
     `[rag]` / sentence-transformers dependency: the `bin/` wrapper passes the
@@ -509,12 +512,21 @@ def reembed(
     embedder fails loud (ReembedError) instead of silently writing a table the
     compatibility guard would later reject.
 
-    The drop+recreate+insert sequence runs inside a single explicit transaction.
-    The DB connects in autocommit mode (`isolation_level=None`), so without this
-    each statement would commit on its own and a crash mid-reembed could leave a
-    dropped or half-rebuilt index. vec0 DDL is transactional in SQLite, so on any
-    failure (including a width-mismatch `ReembedError`) we ROLLBACK and the OLD
-    index is left fully intact.
+    The CPU-bound embedding compute (`embed_many`) runs in a first phase with no
+    write lock held — on a large corpus it can run for minutes, and holding the
+    write lock across it would block every other writer for the whole run (#161).
+    Only the precomputed vectors are then applied in a second, brief transaction
+    (drop + recreate + insert). The DB connects in autocommit mode
+    (`isolation_level=None`), so that explicit transaction makes the apply atomic:
+    a crash mid-apply cannot leave a dropped or half-rebuilt index, and any
+    failure ROLLBACKs to the OLD index intact.
+
+    Residual constraint: `embeddings` is a vec0 *virtual* table, so SQLite cannot
+    rename or hot-swap it atomically — the rebuild must happen in place. The apply
+    transaction therefore still holds the write lock for the duration of the
+    (I/O-bound) inserts, proportional to corpus size but NOT to the embedding
+    compute. `lock_timeout_ms` sets a bounded `busy_timeout` so a competing writer
+    raises `database is locked` instead of blocking indefinitely on the lock.
 
     Caller responsibilities (handled by `bin/eos-reembed`): snapshot first, and
     update `rag.embed_model` / `rag.embed_dim` in config so the new table width
@@ -533,45 +545,60 @@ def reembed(
     def _prefix(body: str) -> str:
         return body if embed_char_cap is None else body[:embed_char_cap]
 
-    conn.execute("BEGIN")
-    try:
-        conn.execute("DROP TABLE IF EXISTS embeddings")
-        conn.execute(
-            f"CREATE VIRTUAL TABLE embeddings USING vec0("
-            f"content_hash TEXT PRIMARY KEY, embedding FLOAT[{new_dim}])"
-        )
-
-        embedded = 0
-        expected_bytes = new_dim * 4  # float32
-        for start in range(0, len(rows), batch_size):
-            batch = rows[start : start + batch_size]
-            vectors = embed_many([_prefix(r["body"]) for r in batch])
-            if len(vectors) != len(batch):
+    # Phase 1 — compute every vector with NO write lock held. This is the
+    # CPU-bound part (minutes on a large corpus), so it must stay outside any
+    # write transaction (#161). Widths are validated here, before the index is
+    # touched, so a mis-wired embedder fails loud (ReembedError) without ever
+    # dropping the old table.
+    expected_bytes = new_dim * 4  # float32
+    prepared: list[tuple[str, bytes]] = []
+    for start in range(0, len(rows), batch_size):
+        batch = rows[start : start + batch_size]
+        vectors = embed_many([_prefix(r["body"]) for r in batch])
+        if len(vectors) != len(batch):
+            raise ReembedError(
+                f"embedder returned {len(vectors)} vectors for {len(batch)} inputs"
+            )
+        for row, vec in zip(batch, vectors, strict=True):
+            if len(vec) != expected_bytes:
                 raise ReembedError(
-                    f"embedder returned {len(vectors)} vectors for {len(batch)} inputs"
+                    f"embedder produced a {len(vec) // 4}-dim vector but the new "
+                    f"table is {new_dim}-dim; aborting before writing a mismatched "
+                    f"index (content hash {row['hash']})"
                 )
-            for row, vec in zip(batch, vectors, strict=True):
-                if len(vec) != expected_bytes:
-                    raise ReembedError(
-                        f"embedder produced a {len(vec) // 4}-dim vector but the new "
-                        f"table is {new_dim}-dim; aborting before writing a mismatched "
-                        f"index (content hash {row['hash']})"
-                    )
+            prepared.append((row["hash"], vec))
+
+    # Phase 2 — apply the precomputed vectors in a brief, bounded transaction.
+    # busy_timeout caps how long this waits to acquire the write lock so a
+    # contended apply raises instead of hanging; it is restored afterward so the
+    # shared connection keeps its prior setting.
+    prior_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    conn.execute(f"PRAGMA busy_timeout = {int(lock_timeout_ms)}")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("DROP TABLE IF EXISTS embeddings")
+            conn.execute(
+                f"CREATE VIRTUAL TABLE embeddings USING vec0("
+                f"content_hash TEXT PRIMARY KEY, embedding FLOAT[{new_dim}])"
+            )
+            for content_hash_val, vec in prepared:
                 conn.execute(
                     "INSERT OR REPLACE INTO embeddings (content_hash, embedding) "
                     "VALUES (?, ?)",
-                    (row["hash"], vec),
+                    (content_hash_val, vec),
                 )
-                embedded += 1
-        conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.execute(f"PRAGMA busy_timeout = {int(prior_timeout)}")
 
     return {
         "new_dim": new_dim,
         "previous_dim": previous_dim,
         "content_total": int(content_total),
-        "embedded": embedded,
+        "embedded": len(prepared),
         "skipped_tombstoned": int(content_total) - len(rows),
     }

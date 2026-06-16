@@ -720,3 +720,73 @@ def test_reembed_wrong_width_leaves_old_index_intact(tmp_path):
     assert after_sql == before_sql
     assert "FLOAT[4]" in after_sql
     assert after_rows == before_rows
+
+
+def test_reembed_computes_embeddings_outside_write_transaction(tmp_path):
+    """The CPU-bound embed_many must run with NO write lock held (#161).
+
+    Holding the write lock across the (possibly minutes-long) embedding compute
+    would block every other writer for the whole run. We assert it directly: the
+    injected embedder records, at call time, whether a write transaction is open
+    and whether the old `embeddings` table is still its original 4-dim shape. The
+    apply transaction (drop + recreate + insert) must not have started yet.
+    """
+    src = tmp_path / "db.sqlite"
+    _make_db(src)  # 4-dim embeddings table
+    conn = _open(src)
+
+    observations: list[dict] = []
+
+    def embed_many(texts):
+        tbl_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'embeddings'"
+        ).fetchone()[0]
+        observations.append(
+            {"in_transaction": conn.in_transaction, "table_sql": tbl_sql}
+        )
+        return [sqlite_vec.serialize_float32([0.1] * 8) for _ in texts]
+
+    report = maintenance.reembed(conn, embed_many, 8)
+    conn.commit()
+
+    # embed_many ran, and every call happened before the apply transaction:
+    # no write transaction open, old 4-dim table still in place.
+    assert observations, "embed_many was never called"
+    for obs in observations:
+        assert obs["in_transaction"] is False
+        assert "FLOAT[4]" in obs["table_sql"]
+
+    # And the rebuild still happened: table is now 8-dim with every live row.
+    after_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'embeddings'"
+    ).fetchone()[0]
+    assert "FLOAT[8]" in after_sql
+    n_emb = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+    n_live = conn.execute(
+        "SELECT COUNT(*) FROM content WHERE tombstoned = 0"
+    ).fetchone()[0]
+    conn.close()
+    assert n_emb == n_live == report["embedded"] == 2
+
+
+def test_reembed_apply_lock_is_bounded_by_busy_timeout(tmp_path):
+    """A contended apply must raise (bounded busy_timeout), never hang (#161).
+
+    A second connection holds the write lock; reembed's brief apply transaction
+    cannot acquire it and, with a short lock_timeout_ms, raises 'database is
+    locked' quickly instead of blocking. The competing connection is released in
+    finally so the connections never deadlock on each other.
+    """
+    src = tmp_path / "db.sqlite"
+    _make_db(src)
+    conn = _open(src)
+    blocker = _open(src)
+    try:
+        blocker.execute("BEGIN IMMEDIATE")  # holds the write lock
+        blocker.execute("INSERT INTO events (type, payload, actor) VALUES ('x', '{}', 'a')")
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            maintenance.reembed(conn, _fake_embedder(8), 8, lock_timeout_ms=100)
+    finally:
+        blocker.execute("ROLLBACK")
+        blocker.close()
+        conn.close()
