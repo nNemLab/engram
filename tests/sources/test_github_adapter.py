@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -87,6 +88,48 @@ async def test_subsequent_run_uses_compare(monkeypatch):
     ])
     cursor = json.loads(src["cursor"])
     assert cursor["last_sha"] == "head2"
+
+
+# ----- #164: requests routed through the politeness/rate-limit helper ------
+
+
+@pytest.mark.asyncio
+async def test_requests_honor_throttle_and_retry(monkeypatch):
+    """A 429 (Retry-After) on a GitHub call is slept off and retried via the
+    shared politeness helper rather than raising and tripping the breaker."""
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    tree = (FIX / "github_tree_response.json").read_text()
+    branch_calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        p = request.url.path
+        if p == "/repos/docker/docs/branches/main":
+            branch_calls["n"] += 1
+            if branch_calls["n"] == 1:
+                return httpx.Response(429, headers={"retry-after": "1"})
+            return httpx.Response(200, json={"commit": {"sha": "head1"}})
+        if p == "/repos/docker/docs/git/trees/head1":
+            return httpx.Response(200, text=tree, headers={"content-type": "application/json"})
+        if "/contents/docs/engine/install.md" in p:
+            return httpx.Response(200, text="install body")
+        if "/contents/docs/engine/upgrade.md" in p:
+            return httpx.Response(200, text="upgrade body")
+        return httpx.Response(404)
+
+    sleeps = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
+    adapter = GitHubRepoAdapter(_transport=httpx.MockTransport(handler))
+    src = _src()
+    with patch("engram.poller.adapters._http.asyncio.sleep", side_effect=fake_sleep):
+        cands = [c async for c in adapter.fetch(src)]
+
+    assert branch_calls["n"] == 2  # retried after the 429
+    assert 1.0 in sleeps  # honored Retry-After
+    assert len(cands) == 2
+    assert json.loads(src["cursor"])["last_sha"] == "head1"
 
 
 # ----- token resolution: env -> gh keyring -> anonymous ------------------

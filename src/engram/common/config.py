@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field, fields
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -129,6 +129,54 @@ def _resolve_config_path() -> Path:
     return expand(os.environ.get("ENGRAM_CONFIG", str(DEFAULT_CONFIG_PATH)))
 
 
+def _expand_no_resolve(p: str | Path) -> Path:
+    """~- and $VAR-expand a path WITHOUT resolving it against the CWD."""
+    return Path(os.path.expandvars(os.path.expanduser(str(p))))
+
+
+def _resolve_under_root(p: str | Path, root: Path) -> Path:
+    """Resolve a config path deterministically.
+
+    An absolute path (after ``~``/``$VAR`` expansion) is used as-is. A *relative*
+    path is anchored to ``paths.root`` rather than the launching process's CWD,
+    so every daemon resolves e.g. a relative ``db:`` to the same file regardless
+    of where it was started.
+    """
+    expanded = _expand_no_resolve(p)
+    if not expanded.is_absolute():
+        expanded = root / expanded
+    return expanded.resolve()
+
+
+def _section(raw: dict[str, Any], name: str, path: Path, cls: type) -> dict[str, Any]:
+    """Return a validated mapping for one config section.
+
+    * A missing section, or one present but empty (``name:`` with nothing under
+      it -> YAML ``None``), yields ``{}`` so the dataclass defaults apply
+      instead of ``cls(**None)`` blowing up.
+    * A section present but not a mapping is a config error, not a silent
+      coercion.
+    * Every provided key is checked against the target dataclass's fields
+      *before* construction, so a typo'd/unknown key fails loudly naming the
+      file, section, and key rather than raising an opaque ``TypeError``.
+    """
+    data = raw.get(name)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Section '{name}' in {path} must be a mapping, got {type(data).__name__}."
+        )
+    valid = {f.name for f in fields(cls)}
+    for key in data:
+        if key not in valid:
+            raise ValueError(
+                f"Unknown key '{key}' in section '{name}' of {path}. "
+                f"Valid keys for '{name}': {sorted(valid)}."
+            )
+    return data
+
+
 @lru_cache(maxsize=1)
 def load_config(path: Path | None = None) -> Config:
     p = path or _resolve_config_path()
@@ -136,24 +184,44 @@ def load_config(path: Path | None = None) -> Config:
         raise FileNotFoundError(
             f"Config not found at {p}. Copy config.example.yml to {p} and edit."
         )
-    raw = yaml.safe_load(p.read_text())
-    pp = raw["paths"]
+    raw = yaml.safe_load(p.read_text()) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"Config {p} must be a YAML mapping at the top level, got {type(raw).__name__}."
+        )
+
+    if not raw.get("paths"):
+        raise ValueError(f"Config {p} is missing the required 'paths' section.")
+    pp = _section(raw, "paths", p, Paths)
+    required = [
+        f.name for f in fields(Paths)
+        if f.default is MISSING and f.default_factory is MISSING
+    ]
+    missing = [k for k in required if k not in pp]
+    if missing:
+        raise ValueError(
+            f"Section 'paths' in {p} is missing required key(s): {missing}."
+        )
+
+    # root anchors every relative path; expand it (and resolve against CWD only
+    # if root itself is given relative -- there is nothing else to anchor to).
+    root = expand(pp["root"])
     paths = Paths(
-        root=expand(pp["root"]),
-        vault=expand(pp["vault"]),
-        playbooks_scratch=expand(pp["playbooks_scratch"]),
-        playbooks_curated=expand(pp["playbooks_curated"]),
-        playbooks_runs=expand(pp["playbooks_runs"]),
-        db=expand(pp["db"]),
+        root=root,
+        vault=_resolve_under_root(pp["vault"], root),
+        playbooks_scratch=_resolve_under_root(pp["playbooks_scratch"], root),
+        playbooks_curated=_resolve_under_root(pp["playbooks_curated"], root),
+        playbooks_runs=_resolve_under_root(pp["playbooks_runs"], root),
+        db=_resolve_under_root(pp["db"], root),
     )
     return Config(
         paths=paths,
-        rag=RagConfig(**raw.get("rag", {})),
-        confidence=ConfidenceConfig(**raw.get("confidence", {})),
-        projector=ProjectorConfig(**raw.get("projector", {})),
-        watcher=WatcherConfig(**raw.get("watcher", {})),
-        reactor=ReactorConfig(**raw.get("reactor", {})),
-        playbooks=PlaybookConfig(**raw.get("playbooks", {})),
-        research=ResearchConfig(**raw.get("research", {})),
-        grounding=GroundingConfig(**raw.get("grounding", {})),
+        rag=RagConfig(**_section(raw, "rag", p, RagConfig)),
+        confidence=ConfidenceConfig(**_section(raw, "confidence", p, ConfidenceConfig)),
+        projector=ProjectorConfig(**_section(raw, "projector", p, ProjectorConfig)),
+        watcher=WatcherConfig(**_section(raw, "watcher", p, WatcherConfig)),
+        reactor=ReactorConfig(**_section(raw, "reactor", p, ReactorConfig)),
+        playbooks=PlaybookConfig(**_section(raw, "playbooks", p, PlaybookConfig)),
+        research=ResearchConfig(**_section(raw, "research", p, ResearchConfig)),
+        grounding=GroundingConfig(**_section(raw, "grounding", p, GroundingConfig)),
     )

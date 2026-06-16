@@ -5,10 +5,12 @@ import httpx
 import pytest
 
 from engram.poller.adapters._http import (
+    DEFAULT_RATE_LIMIT_BACKOFF_SECONDS,
     MAX_RETRY_AFTER_SECONDS,
     AsyncRateLimiter,
     HTTPCacheEntry,
     fetch_with_politeness,
+    request_with_retry,
 )
 
 
@@ -117,6 +119,97 @@ async def test_hostile_retry_after_is_capped():
     assert max(sleeps) <= MAX_RETRY_AFTER_SECONDS
     assert MAX_RETRY_AFTER_SECONDS in sleeps
     assert 86400.0 not in sleeps
+
+
+@pytest.mark.asyncio
+async def test_bare_429_without_retry_after_is_retried():
+    """A bare 429 (no Retry-After, no X-RateLimit) must back off and retry once
+    instead of falling through to raise_for_status and tripping the breaker."""
+    calls = {"n": 0}
+    def h(req):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429)  # no headers at all
+        return httpx.Response(200, text="ok")
+    sleeps = []
+    async def fake_sleep(s):
+        sleeps.append(s)
+    rl = AsyncRateLimiter(interval_ms=0)
+    with patch("engram.poller.adapters._http.asyncio.sleep", side_effect=fake_sleep):
+        async with _client(h) as c:
+            r = await fetch_with_politeness(c, "https://x/p", rate_limiter=rl)
+    assert r is not None
+    assert r.body == "ok"
+    assert calls["n"] == 2
+    assert DEFAULT_RATE_LIMIT_BACKOFF_SECONDS in sleeps
+
+
+@pytest.mark.asyncio
+async def test_primary_rate_limit_waits_for_reset():
+    """403/429 with X-RateLimit-Remaining: 0 waits until X-RateLimit-Reset."""
+    import time as _time
+    reset = _time.time() + 30
+    calls = {"n": 0}
+    def h(req):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(
+                429,
+                headers={"x-ratelimit-remaining": "0",
+                         "x-ratelimit-reset": str(reset)},
+            )
+        return httpx.Response(200, text="ok")
+    sleeps = []
+    async def fake_sleep(s):
+        sleeps.append(s)
+    rl = AsyncRateLimiter(interval_ms=0)
+    with patch("engram.poller.adapters._http.asyncio.sleep", side_effect=fake_sleep):
+        async with _client(h) as c:
+            r = await fetch_with_politeness(c, "https://x/p", rate_limiter=rl)
+    assert r is not None
+    assert calls["n"] == 2
+    # Slept roughly until the reset epoch (~30s), clamped under the cap.
+    assert any(0 < s <= MAX_RETRY_AFTER_SECONDS for s in sleeps)
+    assert max(sleeps) <= MAX_RETRY_AFTER_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_request_with_retry_returns_raw_response_and_retries():
+    """request_with_retry honors throttling but returns the raw Response so
+    callers can read JSON + headers (e.g. GitHub Link pagination)."""
+    calls = {"n": 0}
+    def h(req):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"retry-after": "2"})
+        return httpx.Response(200, json={"ok": True}, headers={"link": "rel-next"})
+    sleeps = []
+    async def fake_sleep(s):
+        sleeps.append(s)
+    rl = AsyncRateLimiter(interval_ms=0)
+    with patch("engram.poller.adapters._http.asyncio.sleep", side_effect=fake_sleep):
+        async with _client(h) as c:
+            resp = await request_with_retry(c, "https://x/p", rate_limiter=rl)
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True}
+    assert resp.headers["link"] == "rel-next"
+    assert calls["n"] == 2
+    assert 2.0 in sleeps
+
+
+@pytest.mark.asyncio
+async def test_request_with_retry_gives_up_after_max_retries():
+    """A persistently-throttled endpoint returns the last (still-429) response
+    rather than looping forever."""
+    def h(req):
+        return httpx.Response(429)  # always throttled
+    async def fake_sleep(s):
+        pass
+    rl = AsyncRateLimiter(interval_ms=0)
+    with patch("engram.poller.adapters._http.asyncio.sleep", side_effect=fake_sleep):
+        async with _client(h) as c:
+            resp = await request_with_retry(c, "https://x/p", rate_limiter=rl, max_retries=2)
+    assert resp.status_code == 429
 
 
 @pytest.mark.asyncio
