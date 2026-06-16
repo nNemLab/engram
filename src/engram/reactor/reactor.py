@@ -6,7 +6,7 @@ import sqlite3
 import time
 
 from .. import log as event_log
-from ..common.db import get_connection
+from ..common.db import get_connection, transaction
 from ..common.time import utcnow_iso
 from .handlers import HANDLERS
 
@@ -82,75 +82,133 @@ def run() -> None:
         conn.close()
 
 
+def _handle_failure(
+    conn: sqlite3.Connection, evt: event_log.Event, exc: Exception
+) -> bool:
+    """Record a handler failure and decide how the loop proceeds.
+
+    The handler's own side-effects already rolled back with its per-event
+    transaction (#153). This persists the retry-budget bookkeeping in a SEPARATE
+    transaction so it survives that rollback:
+
+      * under budget -> return False so the caller stops the batch and retries the
+        event on the next tick (the cursor stays at the last fully-processed
+        event, preserving #111's no-silent-drop back-pressure);
+      * budget exhausted -> dead-letter the event AND advance the cursor PAST it
+        in one transaction. The cursor MUST advance even if the dead-letter WRITE
+        itself fails (a permanently-failing event whose DLQ write also fails would
+        otherwise head-of-line-block the stream forever, #115), so fall back to a
+        cursor-only advance (one DLQ record lost, logged).
+
+    Returns True ONLY when the cursor advance was DURABLY persisted -- via either
+    the dead-letter+cursor transaction or the fallback cursor-only write. If BOTH
+    of those fail, returns False so the caller does NOT move the in-memory cursor
+    past the event: the (already attempt-bumped) event stays pending and is
+    retried from the persisted cursor on the next scheduled pass rather than being
+    silently skipped/lost. A failure of the attempt-counter bump itself propagates
+    to the tick handler (cursor stays put, event retried) -- unchanged from before.
+    """
+    with transaction(conn):
+        attempts = _bump_attempts(conn, evt, exc)
+    if attempts < MAX_HANDLER_ATTEMPTS:
+        logger.error(
+            "handler %s failed for event %d (attempt %d/%d); will retry next tick",
+            evt.type, evt.id, attempts, MAX_HANDLER_ATTEMPTS, exc_info=exc,
+        )
+        return False
+    try:
+        with transaction(conn):
+            _dead_letter(conn, evt, attempts, exc)
+            _write_cursor(conn, evt.id)
+        logger.error(
+            "handler %s failed %d times for event %d; dead-lettering and advancing past it",
+            evt.type, attempts, evt.id,
+        )
+        return True
+    except Exception:
+        logger.exception(
+            "handler %s failed %d times for event %d AND the dead-letter write failed; "
+            "trying a cursor-only advance to keep the stream unblocked (DLQ record lost)",
+            evt.type, attempts, evt.id,
+        )
+    # The dead-letter+cursor transaction failed. Try to at least persist the cursor
+    # so the exhausted event no longer blocks the stream.
+    try:
+        with transaction(conn):
+            _write_cursor(conn, evt.id)
+        logger.error(
+            "handler %s failed %d times for event %d; advanced past it without a DLQ record",
+            evt.type, attempts, evt.id,
+        )
+        return True
+    except Exception:
+        # Neither the DLQ write nor the fallback cursor write landed: the cursor was
+        # NOT durably advanced. Do NOT report 'advanced' -- moving the in-memory
+        # cursor now would skip the event without ever recording it (silent loss).
+        # Leave it pending; it retries from the persisted cursor on the next pass.
+        logger.exception(
+            "handler %s failed %d times for event %d AND both the dead-letter write "
+            "and the fallback cursor write failed; NOT advancing -- event stays "
+            "pending for retry next pass",
+            evt.type, attempts, evt.id,
+        )
+        return False
+
+
 def _run_loop(conn: sqlite3.Connection) -> None:
     cursor = _read_cursor(conn)
     logger.info("reactor starting; cursor=%d handlers=%s", cursor, list(HANDLERS))
     types = list(HANDLERS.keys())
     while True:
         try:
-            last = cursor
-            for evt in event_log.since(conn, cursor, types=types, yield_poison=True):
+            # Materialize the batch before processing: each event below COMMITs its
+            # own transaction, so we must not iterate a live cursor over `events`
+            # while writing to that table.
+            for evt in list(event_log.since(conn, cursor, types=types, yield_poison=True)):
                 if evt.poison:
                     # Dead-letter an un-parseable payload and advance past it so
                     # one corrupt row can't freeze the loop and drop every later
-                    # event (#84).
+                    # event (#84). No handler effects to bind -- the single cursor
+                    # write is atomic on its own.
                     logger.warning(
                         "reactor skipping poison event id=%d (unparseable payload)",
                         evt.id,
                     )
-                    last = evt.id
+                    _write_cursor(conn, evt.id)
+                    cursor = evt.id
                     continue
                 handler = HANDLERS.get(evt.type)
-                if handler:
-                    try:
+                if handler is None:
+                    _write_cursor(conn, evt.id)  # no handler → safe to advance
+                    cursor = evt.id
+                    continue
+                try:
+                    # #153: the handler's side-effects AND this event's cursor
+                    # advance commit in ONE transaction (the handler's own
+                    # `with transaction` joins this outer one). A crash mid-handler,
+                    # or before the cursor persists, rolls BOTH back -- so the cursor
+                    # never advances past an event whose effects didn't fully land,
+                    # and no completed non-idempotent event (merged / stale_marked /
+                    # refresh_requested) is replayed/re-emitted on restart.
+                    with transaction(conn):
                         handler(conn, evt)
-                    except Exception as exc:
-                        # A parseable event whose handler raised. Track attempts so
-                        # transient failures retry (preserving #111's no-silent-drop
-                        # guarantee) but a deterministic failure can't block forever.
-                        attempts = _bump_attempts(conn, evt, exc)
-                        if attempts >= MAX_HANDLER_ATTEMPTS:
-                            # Budget exhausted: record it and advance past the event
-                            # so later events are no longer head-of-line-blocked.
-                            # The cursor MUST advance even if the dead-letter WRITE
-                            # itself fails (DB error/lock/schema drift); otherwise the
-                            # exception would escape to the tick-level handler, the
-                            # cursor would stay put, and this same event would be
-                            # retried forever -- re-creating the exact head-of-line
-                            # block we're fixing. Losing/logging one DLQ record is
-                            # strictly better than wedging the whole reactor.
-                            try:
-                                _dead_letter(conn, evt, attempts, exc)
-                                logger.error(
-                                    "handler %s failed %d times for event %d; "
-                                    "dead-lettering and advancing past it",
-                                    evt.type, attempts, evt.id,
-                                )
-                            except Exception:
-                                logger.exception(
-                                    "handler %s failed %d times for event %d AND the "
-                                    "dead-letter write failed; advancing past it anyway "
-                                    "to keep the stream unblocked (DLQ record lost)",
-                                    evt.type, attempts, evt.id,
-                                )
-                            last = evt.id
-                            continue
-                        # Under budget: stop the batch and retry on the next tick
-                        # (cursor stays at the last successful event, as in #111).
-                        logger.exception(
-                            "handler %s failed for event %d (attempt %d/%d); "
-                            "will retry next tick",
-                            evt.type, evt.id, attempts, MAX_HANDLER_ATTEMPTS,
-                        )
-                        break
-                    else:
                         _clear_attempts(conn, evt.id)  # success → reset retry budget
-                        last = evt.id  # advance cursor only after successful dispatch
+                        _write_cursor(conn, evt.id)
+                except Exception as exc:
+                    # The handler's effects rolled back with the transaction above.
+                    # Record the failure (retry budget / dead-letter) separately.
+                    # _handle_failure returns True ONLY when the cursor was DURABLY
+                    # advanced past this event; advance the in-memory cursor only
+                    # then, so we never skip an event whose advance wasn't persisted.
+                    if _handle_failure(conn, evt, exc):
+                        cursor = evt.id  # durably advanced past it (dead-lettered)
+                        continue
+                    # Under budget, or the durable cursor advance failed: stop the
+                    # batch and retry from the persisted cursor on the next pass
+                    # (back-pressure; never a tight loop -- the loop sleeps a tick).
+                    break
                 else:
-                    last = evt.id  # no handler → still safe to advance
-            if last != cursor:
-                _write_cursor(conn, last)
-                cursor = last
+                    cursor = evt.id  # committed: handler effects + cursor together
         except Exception:
             logger.exception("reactor tick failed")
         time.sleep(1)

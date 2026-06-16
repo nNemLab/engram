@@ -5,7 +5,9 @@ the real ~/.engram/db.sqlite. The maintenance module is path-explicit by design.
 """
 from __future__ import annotations
 
+import shutil
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -457,6 +459,197 @@ def test_restore_proceeds_when_live_db_not_in_use(tmp_path):
     assert maintenance.verify(live)["ok"] is True
 
 
+def test_restore_atomically_swaps_in_snapshot(tmp_path, monkeypatch):
+    # A successful restore swaps the snapshot in via an atomic os.replace rename,
+    # NOT an in-place overwrite. We prove the rename path is actually taken (spy
+    # os.replace) and that the live file's inode changes (an in-place copy2 would
+    # keep the same inode), in addition to bytes matching and no sidecars left.
+    live = tmp_path / "db.sqlite"
+    hashes = _make_db(live)
+    snap = tmp_path / "snap.sqlite"
+    maintenance.snapshot(live, snap)
+
+    # Diverge the live DB so it is byte-different from the snapshot.
+    conn = _open(live)
+    conn.execute("UPDATE content SET body = 'tampered' WHERE hash = ?", (hashes["h1"],))
+    conn.commit()
+    conn.close()
+    assert live.read_bytes() != snap.read_bytes()
+
+    inode_before = live.stat().st_ino
+
+    replace_calls: list[tuple[Path, Path]] = []
+    real_replace = maintenance.os.replace
+
+    def spy_replace(src, dst):
+        replace_calls.append((Path(src), Path(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(maintenance.os, "replace", spy_replace)
+
+    result = maintenance.restore(snap, live)
+
+    assert result["restored_from"] == snap
+    # The swap went through os.replace exactly once, renaming a temp staging file
+    # (beside the live DB) onto db_path — not overwriting db_path in place.
+    assert len(replace_calls) == 1
+    staged_src, replace_dst = replace_calls[0]
+    assert replace_dst == live
+    assert staged_src.parent == live.parent
+    assert staged_src.name.startswith("db.sqlite.restore-")
+    # Atomic rename => the live path now points at a NEW inode.
+    assert live.stat().st_ino != inode_before
+    # Atomic swap: live is now byte-for-byte the snapshot.
+    assert live.read_bytes() == snap.read_bytes()
+    assert not live.with_name(live.name + "-wal").exists()
+    assert not live.with_name(live.name + "-shm").exists()
+    assert maintenance.verify(live)["ok"] is True
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["copy_to_temp", "os_replace", "lock_acquire"],
+    ids=["copy-to-temp-fails", "os-replace-fails", "lock-acquire-fails"],
+)
+def test_restore_failure_leaves_live_db_intact(tmp_path, monkeypatch, fault):
+    # Whatever stage of the restore blows up — staging the snapshot copy, the
+    # atomic rename, or acquiring the exclusive lock / WAL checkpoint — the live
+    # DB must remain the ORIGINAL intact database (never truncated/partial) and
+    # stay verify()-clean, with no temp staging file left behind.
+    live = tmp_path / "db.sqlite"
+    _make_db(live)
+    snap = tmp_path / "snap.sqlite"
+    maintenance.snapshot(live, snap)
+
+    before = live.read_bytes()
+
+    if fault == "os_replace":
+
+        def _boom_replace(src, dst):
+            raise OSError("simulated disk-full during rename")
+
+        monkeypatch.setattr(maintenance.os, "replace", _boom_replace)
+        expected = (OSError, "simulated disk-full")
+    elif fault == "copy_to_temp":
+        real_copy2 = maintenance.shutil.copy2
+
+        def _boom_copy2(src, dst, *args, **kwargs):
+            # Fail only the snapshot->temp staging copy; let the pre-restore
+            # backup copy succeed so we exercise the staging failure path.
+            if Path(src) == snap:
+                raise OSError("simulated disk-full during temp staging")
+            return real_copy2(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(maintenance.shutil, "copy2", _boom_copy2)
+        expected = (OSError, "simulated disk-full")
+    else:  # lock_acquire
+
+        def _boom_lock(db_path):
+            raise maintenance.RestoreError("simulated lock/checkpoint failure")
+
+        monkeypatch.setattr(maintenance, "_acquire_exclusive_lock", _boom_lock)
+        expected = (maintenance.RestoreError, "simulated lock/checkpoint failure")
+
+    with pytest.raises(expected[0], match=expected[1]):
+        maintenance.restore(snap, live)
+
+    # Original DB is byte-for-byte intact (not truncated/empty) and still valid.
+    assert live.read_bytes() == before
+    assert maintenance.verify(live)["ok"] is True
+    # No leftover staging temp file in the DB directory.
+    leftovers = list(tmp_path.glob("db.sqlite.restore-*"))
+    assert leftovers == []
+
+
+def test_restore_handles_stale_wal_sidecars(tmp_path):
+    # Simulate a crash that left a stale -wal/-shm pair next to the main file:
+    # data committed only into the WAL (a "marker") was never checkpointed. The
+    # restored snapshot must be authoritative — the stale WAL must NOT leak its
+    # marker into the result, and the sidecars must be gone afterwards.
+    snap_source = tmp_path / "source.sqlite"
+    _make_db(snap_source)
+    snap = tmp_path / "snap.sqlite"
+    maintenance.snapshot(snap_source, snap)
+
+    # Build a crash state: a WAL-mode DB whose latest write lives only in -wal.
+    crash = tmp_path / "db.sqlite"
+    crash_wal = crash.with_name(crash.name + "-wal")
+    crash_shm = crash.with_name(crash.name + "-shm")
+    src_conn = _open(snap_source)
+    src_conn.execute("PRAGMA journal_mode=WAL")
+    src_conn.execute("PRAGMA wal_autocheckpoint=0")
+    marker = content_hash("stale-wal-only marker body")
+    src_conn.execute(
+        "INSERT INTO content (hash, body, title, tombstoned) VALUES (?, ?, ?, 0)",
+        (marker, "stale-wal-only marker body", "t"),
+    )
+    src_conn.commit()  # committed into the WAL, NOT checkpointed into the main file
+    # Copy main + live sidecars out while still open => a realistic crash image.
+    shutil.copy2(snap_source, crash)
+    shutil.copy2(snap_source.with_name(snap_source.name + "-wal"), crash_wal)
+    shutil.copy2(snap_source.with_name(snap_source.name + "-shm"), crash_shm)
+    src_conn.close()
+
+    assert crash_wal.exists() and crash_shm.exists()
+
+    result = maintenance.restore(snap, crash)
+
+    assert result["restored_from"] == snap
+    # Restored content is authoritative: byte-identical to the snapshot, with the
+    # stale sidecars removed and the WAL-only marker absent.
+    assert crash.read_bytes() == snap.read_bytes()
+    assert not crash_wal.exists()
+    assert not crash_shm.exists()
+    conn = _open(crash)
+    row = conn.execute(
+        "SELECT COUNT(*) FROM content WHERE hash = ?", (marker,)
+    ).fetchone()
+    conn.close()
+    assert row[0] == 0
+    assert maintenance.verify(crash)["ok"] is True
+
+
+def test_restore_lock_close_does_not_recreate_sidecars(tmp_path):
+    # restore holds an exclusive lock connection across the swap and unlinks the
+    # -wal/-shm sidecars BEFORE closing that connection (the unlink is inside the
+    # held lock; the close happens in the finally afterward). The lock connection
+    # opened the live DB in WAL mode, so a naive close could re-spawn -wal/-shm by
+    # name. This proves it does not: after a successful restore the sidecars are
+    # absent and STAY absent once the lock connection is closed.
+    live = tmp_path / "db.sqlite"
+    _make_db(live)
+    snap = tmp_path / "snap.sqlite"
+    maintenance.snapshot(live, snap)
+
+    wal = live.with_name(live.name + "-wal")
+    shm = live.with_name(live.name + "-shm")
+
+    # Force the live DB into WAL mode with sidecars present on disk but NO active
+    # connection (so restore's not-in-use check passes): write in WAL mode, copy
+    # the live sidecars out while open, close (which removes them), then restore
+    # the sidecar files. The restore's lock connection then opens a genuine
+    # WAL-mode database.
+    c = _open(live)
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA wal_autocheckpoint=0")
+    c.execute("INSERT INTO events (type, payload, actor) VALUES ('x', '{}', 'a')")
+    c.commit()
+    shutil.copy2(wal, tmp_path / "wal.bak")
+    shutil.copy2(shm, tmp_path / "shm.bak")
+    c.close()
+    shutil.copy2(tmp_path / "wal.bak", wal)
+    shutil.copy2(tmp_path / "shm.bak", shm)
+    assert wal.exists() and shm.exists()
+
+    result = maintenance.restore(snap, live)
+
+    assert result["restored_from"] == snap
+    # Closing the (now-replaced) WAL-mode lock connection did not recreate them.
+    assert not wal.exists()
+    assert not shm.exists()
+    assert maintenance.verify(live)["ok"] is True
+
+
 # --------------------------------------------------------------------------- #
 # reembed (#43)
 # --------------------------------------------------------------------------- #
@@ -618,3 +811,82 @@ def test_reembed_wrong_width_leaves_old_index_intact(tmp_path):
     assert after_sql == before_sql
     assert "FLOAT[4]" in after_sql
     assert after_rows == before_rows
+
+
+def test_reembed_computes_embeddings_outside_write_transaction(tmp_path):
+    """The CPU-bound embed_many must run with NO write lock held (#161).
+
+    Holding the write lock across the (possibly minutes-long) embedding compute
+    would block every other writer for the whole run. We assert it directly: the
+    injected embedder records, at call time, whether a write transaction is open
+    and whether the old `embeddings` table is still its original 4-dim shape. The
+    apply transaction (drop + recreate + insert) must not have started yet.
+    """
+    src = tmp_path / "db.sqlite"
+    _make_db(src)  # 4-dim embeddings table
+    conn = _open(src)
+
+    observations: list[dict] = []
+
+    def embed_many(texts):
+        tbl_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'embeddings'"
+        ).fetchone()[0]
+        observations.append(
+            {"in_transaction": conn.in_transaction, "table_sql": tbl_sql}
+        )
+        return [sqlite_vec.serialize_float32([0.1] * 8) for _ in texts]
+
+    report = maintenance.reembed(conn, embed_many, 8)
+    conn.commit()
+
+    # embed_many ran, and every call happened before the apply transaction:
+    # no write transaction open, old 4-dim table still in place.
+    assert observations, "embed_many was never called"
+    for obs in observations:
+        assert obs["in_transaction"] is False
+        assert "FLOAT[4]" in obs["table_sql"]
+
+    # And the rebuild still happened: table is now 8-dim with every live row.
+    after_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'embeddings'"
+    ).fetchone()[0]
+    assert "FLOAT[8]" in after_sql
+    n_emb = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+    n_live = conn.execute(
+        "SELECT COUNT(*) FROM content WHERE tombstoned = 0"
+    ).fetchone()[0]
+    conn.close()
+    assert n_emb == n_live == report["embedded"] == 2
+
+
+def test_reembed_apply_lock_is_bounded_by_busy_timeout(tmp_path):
+    """A contended apply must raise (bounded busy_timeout), never hang (#161).
+
+    A second connection holds the write lock; reembed's brief apply transaction
+    cannot acquire it and, with a short lock_timeout_ms, raises 'database is
+    locked' quickly instead of blocking. The competing connection is released in
+    finally so the connections never deadlock on each other.
+    """
+    src = tmp_path / "db.sqlite"
+    _make_db(src)
+    conn = _open(src)
+    blocker = _open(src)
+    lock_timeout_ms = 100
+    try:
+        blocker.execute("BEGIN IMMEDIATE")  # holds the write lock
+        blocker.execute("INSERT INTO events (type, payload, actor) VALUES ('x', '{}', 'a')")
+        start = time.perf_counter()
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            maintenance.reembed(conn, _fake_embedder(8), 8, lock_timeout_ms=lock_timeout_ms)
+        elapsed = time.perf_counter() - start
+    finally:
+        blocker.execute("ROLLBACK")
+        blocker.close()
+        conn.close()
+
+    # Upper bound: the contended apply must give up close to lock_timeout_ms, not
+    # block on some longer default (sqlite's default busy handling can wait far
+    # longer). A generous ceiling keeps this deterministic on slow CI while still
+    # proving the wait is bounded by the provided lock_timeout_ms (0.1s here).
+    assert elapsed < 0.8, f"contended apply waited {elapsed:.3f}s, expected ~{lock_timeout_ms}ms"

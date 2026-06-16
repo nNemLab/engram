@@ -34,10 +34,13 @@ def _conn(tmp_path):
 
 
 def _seed_content(conn, h, body):
+    # source_url is NULL: these are independent kb items, not revisions of one
+    # URL. (Schema 007 forbids two is_current=1 rows for the SAME source_url, and
+    # NULLs are exempt -- the url is irrelevant to this poison-handling test.)
     conn.execute(
         "INSERT INTO content (hash, body, title, source_url, source_tier, "
         "confidence, kind, tombstoned) "
-        "VALUES (?, ?, ?, 'https://x/p', 'vendor-doc', 0.7, 'kb', 0)",
+        "VALUES (?, ?, ?, NULL, 'vendor-doc', 0.7, 'kb', 0)",
         (h, body, body),
     )
 

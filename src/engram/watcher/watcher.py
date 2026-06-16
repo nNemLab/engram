@@ -167,32 +167,90 @@ def _on_change(conn: sqlite3.Connection, rel: str, abs_path: str) -> None:
         if old is None:
             logger.warning("vault_state %s references missing content %s; skipping", rel, old_hash)
             return
-        # Atomic (#83): the insert + repoint + supersede + projection refresh is a
-        # 4-statement revision swap. A failure partway through would otherwise
-        # leave two current rows (or a vault_state pointing at a missing row);
-        # ROLLBACK leaves the prior revision intact.
+        # Cross-source hash-reuse guard (mirrors dedup #153). If the edited bytes
+        # already exist as a content row under a DIFFERENT source_url (or NULL-vs-
+        # sourced), that row is NOT this file's revision -- demoting the old row and
+        # promoting `WHERE hash = new_hash` would mutate content under the WRONG
+        # source_url and leave THIS source_url with ZERO current rows. Never operate
+        # on such a hash: leave both sides intact and skip the swap. (A matching row
+        # under the SAME source_url is a legitimate revert to an existing revision
+        # and is handled by the swap below.)
+        existing_new = conn.execute(
+            "SELECT source_url FROM content WHERE hash = ?", (new_hash,)
+        ).fetchone()
+        if existing_new is not None and existing_new["source_url"] != old["source_url"]:
+            logger.warning(
+                "vault_edit: %s edited to bytes already owned by source_url %r "
+                "(this file's source_url is %r); not applying as a revision to avoid "
+                "cross-source corruption",
+                rel, existing_new["source_url"], old["source_url"],
+            )
+            return
+        # Atomic (#83) revision swap. Ordered demote-before-promote so the
+        # one-current-per-source_url unique index (migration 007) never sees two
+        # is_current=1 rows for this source_url mid-sequence, and the superseded_by
+        # FK is always satisfied (the new hash exists before it is referenced):
+        #   1. insert the new revision NON-current (is_current=0);
+        #   2. demote the old current row and point it at the new hash;
+        #   3. promote the new revision to current -> exactly one current row.
+        # A failure partway through ROLLs BACK, leaving the prior revision intact.
         with transaction(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO content
                    (hash, body, title, source_url, source_tier, fetched_at, confidence,
                     ttl_days, kind, revision, is_current, protected, vault_path, source_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)""",
                 (new_hash, new_body, old["title"], old["source_url"], old["source_tier"],
                  old["fetched_at"], old["confidence"], old["ttl_days"], old["kind"],
                  old["revision"] + 1, rel, old["source_id"]),
             )
-            # Idempotent regardless of whether the row was freshly inserted or already
-            # existed (human edited a file to match other existing content).
-            conn.execute(
-                "UPDATE content SET is_current = 1, protected = 1, vault_path = ?, updated_at = ? "
-                "WHERE hash = ?",
-                (rel, now, new_hash),
-            )
+            # The new revision MUST exist before we reference it below. INSERT OR
+            # IGNORE is a legitimate no-op when the human edited a file to match
+            # already-existing content (the new hash is already a row), so assert the
+            # row's PRESENCE rather than the insert's rowcount. Inserting it
+            # NON-current is also what guarantees it isn't silently dropped: at
+            # is_current=0 it can never collide with the source_url unique index --
+            # the exact hazard the old is_current=1 insert hit, where INSERT OR IGNORE
+            # swallowed the new revision and the swap then failed.
+            if conn.execute(
+                "SELECT 1 FROM content WHERE hash = ?", (new_hash,)
+            ).fetchone() is None:
+                raise RuntimeError(
+                    f"vault_edit: new revision {new_hash} was not inserted; aborting swap"
+                )
+            # Demote the old current row, now that the new hash exists for the FK.
+            # This briefly leaves zero current rows for the source_url -- the partial
+            # index permits zero or one; only TWO would violate it.
             conn.execute(
                 "UPDATE content SET is_current = 0, superseded_by = ?, vault_path = NULL, updated_at = ? "
                 "WHERE hash = ?",
                 (new_hash, now, old_hash),
             )
+            # Promote the new revision to current+protected -> exactly one current
+            # row. Clear tombstoned too, so a revert to a previously-tombstoned
+            # same-source revision comes back live (mirrors dedup resurrection).
+            conn.execute(
+                "UPDATE content SET is_current = 1, protected = 1, tombstoned = 0, "
+                "vault_path = ?, updated_at = ? WHERE hash = ?",
+                (rel, now, new_hash),
+            )
+            # MINIMUM BAR (#153): the edited source_url must end with EXACTLY ONE
+            # current, non-tombstoned row -- never zero, never two. If a concurrent
+            # change slipped past the cross-source guard above, raise and let the
+            # transaction ROLL BACK rather than commit a broken state. NULL
+            # source_url is exempt: the one-current index does not constrain it and
+            # `source_url = NULL` never matches.
+            if old["source_url"] is not None:
+                n_current = conn.execute(
+                    "SELECT COUNT(*) FROM content "
+                    "WHERE source_url = ? AND is_current = 1 AND tombstoned = 0",
+                    (old["source_url"],),
+                ).fetchone()[0]
+                if n_current != 1:
+                    raise RuntimeError(
+                        f"vault_edit: source_url {old['source_url']!r} would end with "
+                        f"{n_current} current rows after the swap; aborting"
+                    )
             conn.execute(
                 "UPDATE vault_state SET content_hash = ?, rendered_body = ?, rendered_at = ? "
                 "WHERE vault_path = ?",

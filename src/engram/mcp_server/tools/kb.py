@@ -6,6 +6,7 @@ from typing import Any
 
 from ... import dedup
 from ... import log as event_log
+from ...common.db import transaction
 
 MAX_LIMIT = 100  # hard upper bound on kb.list limit to prevent oversized queries
 
@@ -91,12 +92,16 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
             if not row:
                 results.append({"hash": h, "outcome": "not_live"})
                 continue
-            conn.execute("UPDATE content SET tombstoned = 1 WHERE hash = ?", (h,))
-            conn.execute("DELETE FROM embeddings WHERE content_hash = ?", (h,))
             payload = {"hash_tombstoned": h, "hash_kept": None, "reason": reason}
             if note:
                 payload["note"] = note
-            event_log.append(conn, "merged", payload, actor=actor)
+            # #152: tombstone flag + embedding delete + merged event are one
+            # atomic unit -- a failure must not leave content tombstoned with the
+            # embedding gone but no `merged` event (or vice versa).
+            with transaction(conn):
+                conn.execute("UPDATE content SET tombstoned = 1 WHERE hash = ?", (h,))
+                conn.execute("DELETE FROM embeddings WHERE content_hash = ?", (h,))
+                event_log.append(conn, "merged", payload, actor=actor)
             results.append({"hash": h, "outcome": "tombstoned", "title": row["title"]})
         return {"results": results,
                 "tombstoned_count": sum(1 for r in results if r["outcome"] == "tombstoned")}
@@ -112,16 +117,19 @@ def register(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
         )
 
     def flag_contradiction(args: dict[str, Any]) -> dict[str, Any]:
-        cur = conn.execute(
-            "INSERT INTO contradictions (hash_a, hash_b, detected_by) VALUES (?, ?, ?)",
-            (args["hash_a"], args["hash_b"], args.get("detected_by", "agent")),
-        )
-        cid = cur.lastrowid
-        event_log.append(
-            conn, "contradicted",
-            {"hash_a": args["hash_a"], "hash_b": args["hash_b"], "id": cid},
-            actor="agent",
-        )
+        # #152: the contradiction row and its `contradicted` event land together
+        # or not at all.
+        with transaction(conn):
+            cur = conn.execute(
+                "INSERT INTO contradictions (hash_a, hash_b, detected_by) VALUES (?, ?, ?)",
+                (args["hash_a"], args["hash_b"], args.get("detected_by", "agent")),
+            )
+            cid = cur.lastrowid
+            event_log.append(
+                conn, "contradicted",
+                {"hash_a": args["hash_a"], "hash_b": args["hash_b"], "id": cid},
+                actor="agent",
+            )
         return {"id": cid}
 
     return {

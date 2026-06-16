@@ -11,7 +11,7 @@ from typing import Any
 
 from .. import log as event_log
 from ..common.config import load_config
-from ..common.db import get_connection
+from ..common.db import get_connection, transaction
 from ..common.time import utcnow_iso
 from ..dedup import gate
 from .adapters import ADAPTERS
@@ -109,44 +109,48 @@ async def poll_one(conn: sqlite3.Connection, source: dict[str, Any]) -> dict[str
     new_error_count = (source["error_count"] or 0) + 1 if error_msg else 0
     was_paused = bool(source["paused"] or 0)
     paused = 1 if new_error_count >= CIRCUIT_BREAK_THRESHOLD else (source["paused"] or 0)
-    conn.execute(
-        "UPDATE sources SET cursor = ?, last_polled_at = ?, "
-        " last_success_at = COALESCE(?, last_success_at), "
-        " next_poll_at = ?, error_count = ?, last_error = ?, paused = ?, "
-        " updated_at = ? WHERE id = ?",
-        (
-            src_dict.get("cursor"),
-            utcnow_iso("s"),
-            None if error_msg else utcnow_iso("s"),
-            next_at,
-            new_error_count,
-            error_msg,
-            paused,
-            utcnow_iso("s"),
-            source["id"],
-        ),
-    )
-    # Emit only on the 0->1 transition; a re-poll of an already-tripped source
-    # must not re-fire the circuit-broken event.
-    if paused == 1 and not was_paused:
+    # #152: the source state update AND its events (circuit-broken transition +
+    # source_polled) commit as one unit, so a tick can't advance source state
+    # without emitting its events, or emit events without persisting the state.
+    with transaction(conn):
+        conn.execute(
+            "UPDATE sources SET cursor = ?, last_polled_at = ?, "
+            " last_success_at = COALESCE(?, last_success_at), "
+            " next_poll_at = ?, error_count = ?, last_error = ?, paused = ?, "
+            " updated_at = ? WHERE id = ?",
+            (
+                src_dict.get("cursor"),
+                utcnow_iso("s"),
+                None if error_msg else utcnow_iso("s"),
+                next_at,
+                new_error_count,
+                error_msg,
+                paused,
+                utcnow_iso("s"),
+                source["id"],
+            ),
+        )
+        # Emit only on the 0->1 transition; a re-poll of an already-tripped source
+        # must not re-fire the circuit-broken event.
+        if paused == 1 and not was_paused:
+            event_log.append(
+                conn, "source_circuit_broken",
+                {"source_id": source["id"], "error_count": new_error_count},
+                actor="poller",
+            )
         event_log.append(
-            conn, "source_circuit_broken",
-            {"source_id": source["id"], "error_count": new_error_count},
+            conn, "source_polled",
+            {
+                "source_id": source["id"],
+                "candidates_seen": counts["candidates_seen"],
+                "ingested": counts["ingested"],
+                "superseded": counts["superseded"],
+                "exact_dup": counts["exact_dup"],
+                "blocked": counts["blocked"],
+                "errors": counts["errors"],
+            },
             actor="poller",
         )
-    event_log.append(
-        conn, "source_polled",
-        {
-            "source_id": source["id"],
-            "candidates_seen": counts["candidates_seen"],
-            "ingested": counts["ingested"],
-            "superseded": counts["superseded"],
-            "exact_dup": counts["exact_dup"],
-            "blocked": counts["blocked"],
-            "errors": counts["errors"],
-        },
-        actor="poller",
-    )
     return counts
 
 
