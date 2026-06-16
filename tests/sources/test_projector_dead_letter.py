@@ -129,3 +129,81 @@ def test_generic_handler_failure_dead_letters_and_stream_advances(conn, tmp_path
         "SELECT last_event_id FROM daemon_cursors WHERE name = 'projector'"
     ).fetchone()["last_event_id"]
     assert cursor == ok_id
+
+
+def test_inner_transaction_failure_dead_letters_and_stream_advances(conn, tmp_path, monkeypatch):
+    """Failure inside _project_one's transaction path should not leak tx state:
+    retries still work, budget exhaustion dead-letters, cursor advances, and a
+    later good event still projects."""
+    from engram import log as event_log
+    from engram.dedup import content_hash
+    from engram.projector import projector as pmod
+
+    vault = tmp_path / "vault"
+    h_fail = content_hash("body fail tx")
+    h_ok = content_hash("body ok tx")
+    _seed_content(conn, h_fail, "body fail tx", "https://x/fail-tx")
+    _seed_content(conn, h_ok, "body ok tx", "https://x/ok-tx")
+
+    fail_id = event_log.append(conn, "ingested", {"hash": h_fail})
+    ok_id = event_log.append(conn, "ingested", {"hash": h_ok})
+    conn.commit()
+
+    fake_cfg = SimpleNamespace(
+        paths=SimpleNamespace(vault=vault),
+        projector=SimpleNamespace(poll_interval=0, kind_dirs={"research": "030-research"}),
+    )
+    monkeypatch.setattr(pmod, "load_config", lambda: fake_cfg)
+    monkeypatch.setattr(pmod, "MAX_HANDLER_ATTEMPTS", 3)
+
+    calls = []
+
+    class _FailingTxConn:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *args, **kwargs):
+            if sql.startswith("UPDATE content SET vault_path"):
+                params = args[0] if args else ()
+                if len(params) >= 2 and params[1] == h_fail:
+                    raise sqlite3.OperationalError("update exploded inside transaction")
+            return self._real.execute(sql, *args, **kwargs)
+
+        @property
+        def in_transaction(self):
+            return self._real.in_transaction
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    wrapped_conn = _FailingTxConn(conn)
+    real_handle = pmod._handle_event
+
+    def _tracking_handle(conn_arg, vault_arg, evt, kind_dirs):
+        calls.append(evt.id)
+        return real_handle(conn_arg, vault_arg, evt, kind_dirs)
+
+    monkeypatch.setattr(pmod, "_handle_event", _tracking_handle)
+    monkeypatch.setattr(pmod.time, "sleep", _stopper(3))
+
+    with pytest.raises(_StopTick):
+        pmod._run_loop(wrapped_conn)
+
+    assert calls.count(fail_id) == 3
+    assert ok_id in calls
+    assert conn.execute(
+        "SELECT 1 FROM vault_state WHERE content_hash = ?", (h_ok,)
+    ).fetchone() is not None
+
+    row = conn.execute(
+        "SELECT event_id, attempts, error FROM projector_dead_letter WHERE event_id = ?",
+        (fail_id,),
+    ).fetchone()
+    assert row is not None
+    assert row["attempts"] == 3
+    assert "update exploded inside transaction" in row["error"]
+
+    cursor = conn.execute(
+        "SELECT last_event_id FROM daemon_cursors WHERE name = 'projector'"
+    ).fetchone()["last_event_id"]
+    assert cursor == ok_id
