@@ -4,8 +4,8 @@ A read-only view over the existing `sources` and `content` tables. Pure
 SQL/Python — no network, no LLM. Every derived field is computed from columns
 that already exist, so the result is reproducible for a given DB state.
 
-ISO-8601 UTC 'Z' timestamps sort lexicographically, so plain string comparison
-is used for liveness/overdue checks (matching `engram.common.time.utcnow_iso`).
+Time fields are normalized to aware UTC datetimes before liveness/overdue
+comparisons, so mixed ISO precision/offset forms are ordered correctly.
 """
 from __future__ import annotations
 
