@@ -174,7 +174,7 @@ def _on_move(conn: sqlite3.Connection, src_rel: str, dest_rel: str) -> None:
                 "SELECT content_hash FROM vault_state WHERE vault_path = ?",
                 (dest_rel,),
             ).fetchone()
-            if existing_dest and existing_dest["content_hash"] != row["content_hash"]:
+            if existing_dest:
                 conn.execute("DELETE FROM vault_state WHERE vault_path = ?", (dest_rel,))
                 conn.execute(
                     "UPDATE content SET vault_path = NULL WHERE hash = ?",

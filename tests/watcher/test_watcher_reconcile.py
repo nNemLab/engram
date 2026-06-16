@@ -206,6 +206,35 @@ def test_on_move_over_existing_tracked_path_replaces_dest(conn):
     assert old_dest_row["vault_path"] is None
 
 
+def test_on_move_over_existing_dest_with_same_hash_is_safe(conn):
+    src = "030-research/src-same.md"
+    dest = "030-research/dest-same.md"
+    h = _seed_projected_row(conn, rel=src, body="same body", source_url="https://x/same")
+
+    conn.execute(
+        "INSERT INTO vault_state (vault_path, content_hash, rendered_body, rendered_at) "
+        "VALUES (?, ?, ?, '2026-01-01T00:00:00Z')",
+        (dest, h, "same body"),
+    )
+    conn.commit()
+
+    watcher._on_move(conn, src, dest)
+
+    assert conn.execute(
+        "SELECT 1 FROM vault_state WHERE vault_path = ?", (src,)
+    ).fetchone() is None
+    dest_row = conn.execute(
+        "SELECT content_hash FROM vault_state WHERE vault_path = ?", (dest,)
+    ).fetchone()
+    assert dest_row is not None
+    assert dest_row["content_hash"] == h
+    assert conn.execute(
+        "SELECT COUNT(*) FROM vault_state WHERE vault_path = ?", (dest,)
+    ).fetchone()[0] == 1
+    content_row = conn.execute("SELECT vault_path FROM content WHERE hash = ?", (h,)).fetchone()
+    assert content_row["vault_path"] == dest
+
+
 class _FakeDebouncer:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str]] = []
