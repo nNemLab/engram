@@ -282,6 +282,7 @@ def test_watcher_run_finalizer_stops_observer_and_closes_conn(tmp_path, monkeypa
             state["joined"] = True
 
     monkeypatch.setattr(wmod, "Observer", _FakeObserver)
+    monkeypatch.setattr(wmod, "_reconcile_startup", lambda *_args, **_kwargs: None)
 
     def _boom(_seconds):
         raise KeyboardInterrupt
@@ -294,4 +295,44 @@ def test_watcher_run_finalizer_stops_observer_and_closes_conn(tmp_path, monkeypa
     assert state["started"] is True
     assert state["stopped"] is True
     assert state["joined"] is True
+    assert spy.closed is True
+
+
+def test_watcher_run_closes_conn_if_startup_reconcile_raises(tmp_path, monkeypatch):
+    from engram.watcher import watcher as wmod
+
+    spy = _SpyConn()
+    state = {"started": False}
+
+    cfg = types.SimpleNamespace(
+        paths=types.SimpleNamespace(vault=tmp_path / "vault"),
+        watcher=types.SimpleNamespace(debounce_ms=10, ignore=[]),
+    )
+    monkeypatch.setattr(wmod, "load_config", lambda: cfg)
+    monkeypatch.setattr(wmod, "get_connection", lambda: spy)
+
+    class _FakeObserver:
+        def schedule(self, *args, **kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            state["started"] = True
+
+        def stop(self) -> None:
+            pass
+
+        def join(self) -> None:
+            pass
+
+    monkeypatch.setattr(wmod, "Observer", _FakeObserver)
+
+    def _fail(*_args, **_kwargs):
+        raise RuntimeError("reconcile failed")
+
+    monkeypatch.setattr(wmod, "_reconcile_startup", _fail)
+
+    with pytest.raises(RuntimeError, match="reconcile failed"):
+        wmod.run()
+
+    assert state["started"] is False
     assert spy.closed is True
