@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from engram import log as event_log
 from engram.dedup import content_hash
 from engram.projector import projector
 
@@ -109,3 +110,113 @@ def test_file_write_failure_keeps_committed_db_state(tmp_path, monkeypatch):
     ).fetchone()["vault_path"] is not None
     # ...but the file itself was not written (the write raised).
     assert list(vault.rglob("*.md")) == []
+
+
+# --------------------------------------------------------------------------- #
+# superseded branch of _handle_event: SAME #152 atomicity + #96 DB-before-file
+# ordering as _project_one. The superseded handler runs its OWN transaction
+# (DELETE old vault_state + INSERT new vault_state + UPDATE content.vault_path)
+# that COMMITS strictly before the vault file is rewritten, so the two
+# properties proven for _project_one must hold here too.
+# --------------------------------------------------------------------------- #
+OLD_PATH = "030-research/p.md"
+OLD_BODY = "OLD RENDERED BODY"
+
+
+def _seed_superseded(conn, vault):
+    """Seed a superseded scenario: hash_old already projected to OLD_PATH (a
+    vault_state row + an on-disk file), hash_new the now-current revision.
+
+    Returns (h_old, h_new, old_file).
+    """
+    h_old = content_hash("old body")
+    h_new = content_hash("new body")
+    conn.execute(
+        "INSERT INTO content (hash, body, title, source_url, source_tier, confidence, "
+        "kind, revision, is_current, vault_path) "
+        "VALUES (?, 'old body', 'T', 'https://x/p', 'vendor-doc', 0.7, 'research', 1, 0, ?)",
+        (h_old, OLD_PATH),
+    )
+    conn.execute(
+        "INSERT INTO content (hash, body, title, source_url, source_tier, confidence, "
+        "kind, revision, is_current) "
+        "VALUES (?, 'new body', 'T', 'https://x/p', 'vendor-doc', 0.7, 'research', 2, 1)",
+        (h_new,),
+    )
+    conn.execute(
+        "INSERT INTO vault_state (vault_path, content_hash, rendered_body, rendered_at) "
+        "VALUES (?, ?, ?, '2026-01-01T00:00:00Z')",
+        (OLD_PATH, h_old, OLD_BODY),
+    )
+    old_file = vault / OLD_PATH
+    old_file.parent.mkdir(parents=True, exist_ok=True)
+    old_file.write_text(OLD_BODY, encoding="utf-8")
+    return h_old, h_new, old_file
+
+
+def _superseded_evt(h_old, h_new):
+    return event_log.Event(
+        id=1, ts="2026-01-01T00:00:00.000Z", type="superseded",
+        payload={"hash_old": h_old, "hash_new": h_new}, actor=None, correlation_id=None,
+    )
+
+
+def test_superseded_file_write_failure_keeps_committed_db_state(tmp_path, monkeypatch):
+    """superseded branch: the DB commit happens BEFORE the file rewrite (#96), so a
+    file-write failure leaves the committed DB state in place (vault_state
+    repointed to the new hash) and never rolls it back."""
+    conn = _conn(tmp_path)
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    kind_dirs = {"research": "030-research"}
+    h_old, h_new, old_file = _seed_superseded(conn, vault)
+
+    def _boom_write(path, body):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(projector, "_atomic_write", _boom_write)
+    with pytest.raises(OSError, match="disk full"):
+        projector._handle_event(conn, vault, _superseded_evt(h_old, h_new), kind_dirs)
+
+    # DB state was committed BEFORE the (failed) file write: old vault_state gone,
+    # new vault_state at the same path, content.vault_path repointed to h_new.
+    assert conn.execute(
+        "SELECT 1 FROM vault_state WHERE content_hash=?", (h_old,)
+    ).fetchone() is None
+    assert conn.execute(
+        "SELECT vault_path FROM vault_state WHERE content_hash=?", (h_new,)
+    ).fetchone()["vault_path"] == OLD_PATH
+    assert conn.execute(
+        "SELECT vault_path FROM content WHERE hash=?", (h_new,)
+    ).fetchone()["vault_path"] == OLD_PATH
+    # ...but the file rewrite raised, so the file still holds the OLD bytes.
+    assert old_file.read_text() == OLD_BODY
+
+
+def test_superseded_db_write_failure_rolls_back_and_writes_no_file(tmp_path):
+    """superseded branch: a DB-write failure rolls the whole transaction back AND
+    never reaches the file rewrite, so on-disk bytes are untouched."""
+    conn = _conn(tmp_path)
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    kind_dirs = {"research": "030-research"}
+    h_old, h_new, old_file = _seed_superseded(conn, vault)
+
+    # Fail the LAST DB write (UPDATE content SET vault_path) inside the txn.
+    failing = _FailingConn(conn, "UPDATE content SET vault_path")
+    with pytest.raises(sqlite3.OperationalError, match="db write exploded"):
+        projector._handle_event(failing, vault, _superseded_evt(h_old, h_new), kind_dirs)
+
+    # The transaction rolled back: old vault_state intact, no new-hash row,
+    # content.vault_path for h_new still unset.
+    assert conn.execute(
+        "SELECT vault_path FROM vault_state WHERE content_hash=?", (h_old,)
+    ).fetchone()["vault_path"] == OLD_PATH
+    assert conn.execute(
+        "SELECT 1 FROM vault_state WHERE content_hash=?", (h_new,)
+    ).fetchone() is None
+    assert conn.execute(
+        "SELECT vault_path FROM content WHERE hash=?", (h_new,)
+    ).fetchone()["vault_path"] is None
+    # The file rewrite was never reached: still the OLD bytes.
+    assert old_file.read_text() == OLD_BODY

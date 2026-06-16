@@ -532,6 +532,16 @@ def reembed(
     compute. `lock_timeout_ms` sets a bounded `busy_timeout` so a competing writer
     raises `database is locked` instead of blocking indefinitely on the lock.
 
+    Residual staleness window: because phase 1 reads `content` and embeds it with
+    NO lock held, content that is written or tombstoned BETWEEN phase 1's read and
+    phase 2's brief apply transaction is NOT reflected in the rebuilt index — a row
+    inserted after the phase-1 snapshot gets no vector, and a row tombstoned after
+    it keeps the vector phase 1 computed. This is benign and self-healing: the live
+    ingest path embeds new/changed content as it lands, and the gap closes on the
+    next ingest of that row (or a subsequent reembed). reembed is a migration tool,
+    not a point-in-time-consistent snapshot, so it intentionally does not lock out
+    writers across the (minutes-long) embedding compute to guarantee otherwise.
+
     Caller responsibilities (handled by `bin/eos-reembed`): snapshot first, and
     update `rag.embed_model` / `rag.embed_dim` in config so the new table width
     matches what daemons will compute on the next start.

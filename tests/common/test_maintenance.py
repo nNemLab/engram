@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -608,6 +609,47 @@ def test_restore_handles_stale_wal_sidecars(tmp_path):
     assert maintenance.verify(crash)["ok"] is True
 
 
+def test_restore_lock_close_does_not_recreate_sidecars(tmp_path):
+    # restore holds an exclusive lock connection across the swap and unlinks the
+    # -wal/-shm sidecars BEFORE closing that connection (the unlink is inside the
+    # held lock; the close happens in the finally afterward). The lock connection
+    # opened the live DB in WAL mode, so a naive close could re-spawn -wal/-shm by
+    # name. This proves it does not: after a successful restore the sidecars are
+    # absent and STAY absent once the lock connection is closed.
+    live = tmp_path / "db.sqlite"
+    _make_db(live)
+    snap = tmp_path / "snap.sqlite"
+    maintenance.snapshot(live, snap)
+
+    wal = live.with_name(live.name + "-wal")
+    shm = live.with_name(live.name + "-shm")
+
+    # Force the live DB into WAL mode with sidecars present on disk but NO active
+    # connection (so restore's not-in-use check passes): write in WAL mode, copy
+    # the live sidecars out while open, close (which removes them), then restore
+    # the sidecar files. The restore's lock connection then opens a genuine
+    # WAL-mode database.
+    c = _open(live)
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA wal_autocheckpoint=0")
+    c.execute("INSERT INTO events (type, payload, actor) VALUES ('x', '{}', 'a')")
+    c.commit()
+    shutil.copy2(wal, tmp_path / "wal.bak")
+    shutil.copy2(shm, tmp_path / "shm.bak")
+    c.close()
+    shutil.copy2(tmp_path / "wal.bak", wal)
+    shutil.copy2(tmp_path / "shm.bak", shm)
+    assert wal.exists() and shm.exists()
+
+    result = maintenance.restore(snap, live)
+
+    assert result["restored_from"] == snap
+    # Closing the (now-replaced) WAL-mode lock connection did not recreate them.
+    assert not wal.exists()
+    assert not shm.exists()
+    assert maintenance.verify(live)["ok"] is True
+
+
 # --------------------------------------------------------------------------- #
 # reembed (#43)
 # --------------------------------------------------------------------------- #
@@ -830,12 +872,21 @@ def test_reembed_apply_lock_is_bounded_by_busy_timeout(tmp_path):
     _make_db(src)
     conn = _open(src)
     blocker = _open(src)
+    lock_timeout_ms = 100
     try:
         blocker.execute("BEGIN IMMEDIATE")  # holds the write lock
         blocker.execute("INSERT INTO events (type, payload, actor) VALUES ('x', '{}', 'a')")
+        start = time.perf_counter()
         with pytest.raises(sqlite3.OperationalError, match="locked"):
-            maintenance.reembed(conn, _fake_embedder(8), 8, lock_timeout_ms=100)
+            maintenance.reembed(conn, _fake_embedder(8), 8, lock_timeout_ms=lock_timeout_ms)
+        elapsed = time.perf_counter() - start
     finally:
         blocker.execute("ROLLBACK")
         blocker.close()
         conn.close()
+
+    # Upper bound: the contended apply must give up close to lock_timeout_ms, not
+    # block on some longer default (sqlite's default busy handling can wait far
+    # longer). A generous ceiling keeps this deterministic on slow CI while still
+    # proving the wait is bounded by the provided lock_timeout_ms (0.1s here).
+    assert elapsed < 0.8, f"contended apply waited {elapsed:.3f}s, expected ~{lock_timeout_ms}ms"
