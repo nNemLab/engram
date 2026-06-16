@@ -3,6 +3,7 @@ import sqlite3
 
 import pytest
 import sqlite_vec
+from watchdog.events import FileDeletedEvent, FileMovedEvent
 
 from engram.common.db import init_schema
 from engram.dedup import content_hash
@@ -136,4 +137,137 @@ def test_startup_reconcile_applies_create_modify_delete(conn, tmp_path):
     # delete applied: stale row removed
     assert conn.execute(
         "SELECT 1 FROM vault_state WHERE vault_path = ?", (deleted_rel,)
+    ).fetchone() is None
+
+
+def test_startup_reconcile_skips_empty_note_and_keeps_processing(conn, tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "030-research").mkdir(parents=True)
+
+    (vault / "030-research/empty.md").write_text("", encoding="utf-8")
+    (vault / "030-research/valid.md").write_text("valid body", encoding="utf-8")
+
+    watcher._reconcile_startup(conn, vault, ignore=[])
+
+    assert conn.execute(
+        "SELECT 1 FROM content WHERE hash = ?",
+        (content_hash("valid body"),),
+    ).fetchone() is not None
+    assert conn.execute(
+        "SELECT 1 FROM content WHERE hash = ?",
+        (content_hash(""),),
+    ).fetchone() is None
+
+
+def test_startup_reconcile_isolates_per_file_change_errors(conn, tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    (vault / "030-research").mkdir(parents=True)
+    (vault / "030-research/bad.md").write_text("bad", encoding="utf-8")
+    (vault / "030-research/good.md").write_text("good", encoding="utf-8")
+
+    orig = watcher._on_change
+
+    def _flaky(c, rel, abs_path):
+        if rel.endswith("bad.md"):
+            raise RuntimeError("boom")
+        return orig(c, rel, abs_path)
+
+    monkeypatch.setattr(watcher, "_on_change", _flaky)
+
+    # bad.md failure is contained; good.md still processed.
+    watcher._reconcile_startup(conn, vault, ignore=[])
+
+    assert conn.execute(
+        "SELECT 1 FROM content WHERE hash = ?",
+        (content_hash("good"),),
+    ).fetchone() is not None
+
+
+def test_on_move_over_existing_tracked_path_replaces_dest(conn):
+    src = "030-research/src.md"
+    dest = "030-research/dest.md"
+    src_hash = _seed_projected_row(conn, rel=src, body="src body", source_url="https://x/src")
+    dest_hash = _seed_projected_row(conn, rel=dest, body="dest body", source_url="https://x/dest")
+
+    watcher._on_move(conn, src, dest)
+
+    assert conn.execute(
+        "SELECT 1 FROM vault_state WHERE vault_path = ?", (src,)
+    ).fetchone() is None
+    moved = conn.execute(
+        "SELECT content_hash FROM vault_state WHERE vault_path = ?", (dest,)
+    ).fetchone()
+    assert moved["content_hash"] == src_hash
+
+    src_row = conn.execute("SELECT vault_path FROM content WHERE hash = ?", (src_hash,)).fetchone()
+    assert src_row["vault_path"] == dest
+
+    old_dest_row = conn.execute("SELECT vault_path FROM content WHERE hash = ?", (dest_hash,)).fetchone()
+    assert old_dest_row["vault_path"] is None
+
+
+class _FakeDebouncer:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+
+    def trigger(self, key: str, rel: str, abs_path: str) -> None:
+        self.calls.append((key, rel, abs_path))
+
+
+def test_handler_on_moved_both_in_vault_repoints(conn, tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "030-research").mkdir(parents=True)
+    src_rel = "030-research/a.md"
+    dest_rel = "030-research/b.md"
+    src_hash = _seed_projected_row(conn, rel=src_rel, body="a body", source_url="https://x/a")
+
+    handler = watcher._Handler(vault, _FakeDebouncer(), [], conn)
+    handler.on_moved(FileMovedEvent(str(vault / src_rel), str(vault / dest_rel)))
+
+    moved = conn.execute(
+        "SELECT content_hash FROM vault_state WHERE vault_path = ?", (dest_rel,)
+    ).fetchone()
+    assert moved is not None
+    assert moved["content_hash"] == src_hash
+
+
+def test_handler_on_moved_src_only_deletes(conn, tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "030-research").mkdir(parents=True)
+    src_rel = "030-research/outgoing.md"
+    _seed_projected_row(conn, rel=src_rel, body="body", source_url="https://x/out")
+
+    handler = watcher._Handler(vault, _FakeDebouncer(), [], conn)
+    handler.on_moved(FileMovedEvent(str(vault / src_rel), str(tmp_path / "outside.md")))
+
+    assert conn.execute(
+        "SELECT 1 FROM vault_state WHERE vault_path = ?", (src_rel,)
+    ).fetchone() is None
+
+
+def test_handler_on_moved_dest_only_triggers_ingest(conn, tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "030-research").mkdir(parents=True)
+    dest_rel = "030-research/incoming.md"
+    dest_abs = vault / dest_rel
+    dest_abs.write_text("incoming", encoding="utf-8")
+
+    debouncer = _FakeDebouncer()
+    handler = watcher._Handler(vault, debouncer, [], conn)
+    handler.on_moved(FileMovedEvent(str(tmp_path / "outside.md"), str(dest_abs)))
+
+    assert debouncer.calls == [(dest_rel, dest_rel, str(dest_abs))]
+
+
+def test_handler_on_deleted_calls_delete(conn, tmp_path):
+    vault = tmp_path / "vault"
+    (vault / "030-research").mkdir(parents=True)
+    rel = "030-research/deleted-by-handler.md"
+    _seed_projected_row(conn, rel=rel, body="body", source_url="https://x/handler-del")
+
+    handler = watcher._Handler(vault, _FakeDebouncer(), [], conn)
+    handler.on_deleted(FileDeletedEvent(str(vault / rel)))
+
+    assert conn.execute(
+        "SELECT 1 FROM vault_state WHERE vault_path = ?", (rel,)
     ).fetchone() is None

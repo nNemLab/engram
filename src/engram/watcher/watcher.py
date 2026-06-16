@@ -169,6 +169,18 @@ def _on_move(conn: sqlite3.Connection, src_rel: str, dest_rel: str) -> None:
             ).fetchone()
             if not row:
                 return
+
+            existing_dest = conn.execute(
+                "SELECT content_hash FROM vault_state WHERE vault_path = ?",
+                (dest_rel,),
+            ).fetchone()
+            if existing_dest and existing_dest["content_hash"] != row["content_hash"]:
+                conn.execute("DELETE FROM vault_state WHERE vault_path = ?", (dest_rel,))
+                conn.execute(
+                    "UPDATE content SET vault_path = NULL WHERE hash = ?",
+                    (existing_dest["content_hash"],),
+                )
+
             conn.execute(
                 "UPDATE vault_state SET vault_path = ? WHERE vault_path = ?",
                 (dest_rel, src_rel),
@@ -197,10 +209,16 @@ def _reconcile_startup(conn: sqlite3.Connection, vault: Path, ignore: list[str])
         }
 
     for rel in sorted(current_paths):
-        _on_change(conn, rel, str(vault / rel))
+        try:
+            _on_change(conn, rel, str(vault / rel))
+        except Exception:
+            logger.exception("startup reconcile: failed to process %s", rel)
 
     for rel in sorted(known - current_paths):
-        _on_delete(conn, rel)
+        try:
+            _on_delete(conn, rel)
+        except Exception:
+            logger.exception("startup reconcile: failed to tombstone %s", rel)
 
 
 def _on_change(conn: sqlite3.Connection, rel: str, abs_path: str) -> None:
@@ -220,6 +238,9 @@ def _on_change(conn: sqlite3.Connection, rel: str, abs_path: str) -> None:
         ).fetchone()
         if not row:
             # New file dropped into vault by hand. Treat as an inbox ingest.
+            if not new_body.strip():
+                logger.info("skip empty manual ingest candidate: %s", rel)
+                return
             from .. import dedup
             result = dedup.gate(
                 conn, body=new_body, title=p.stem, source_tier="manual",
@@ -373,13 +394,15 @@ def run() -> None:
     conn = get_connection()
 
     debouncer = _Debouncer(cfg.watcher.debounce_ms, lambda rel, abs_p: _on_change(conn, rel, abs_p))
-    _reconcile_startup(conn, vault, cfg.watcher.ignore)
     handler = _Handler(vault, debouncer, cfg.watcher.ignore, conn)
     observer = Observer()
     observer.schedule(handler, str(vault), recursive=True)
-    observer.start()
-    logger.info("watcher started; vault=%s", vault)
+    observer_started = False
     try:
+        _reconcile_startup(conn, vault, cfg.watcher.ignore)
+        observer.start()
+        observer_started = True
+        logger.info("watcher started; vault=%s", vault)
         while True:
             time.sleep(60)
     except KeyboardInterrupt:
@@ -389,6 +412,7 @@ def run() -> None:
         # observer, and close the long-lived DB connection so the daemon doesn't
         # leak threads / file descriptors / WAL sidecars.
         debouncer.cancel_all()
-        observer.stop()
-        observer.join()
+        if observer_started:
+            observer.stop()
+            observer.join()
         conn.close()
