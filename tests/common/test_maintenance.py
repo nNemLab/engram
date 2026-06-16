@@ -39,9 +39,6 @@ def _apply_schema(conn: sqlite3.Connection, embed_dim: int = 4) -> None:
         "003_grounding.sql",
         "004_protected.sql",
         "005_event_hash_chain.sql",
-        "006_reactor_dead_letter.sql",
-        "007_unique_current_per_url.sql",
-        "008_events_type_index.sql",
     ):
         conn.executescript((SCHEMA / fn).read_text())
     conn.execute(
