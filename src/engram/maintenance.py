@@ -302,23 +302,29 @@ def _reserve_pre_restore_backup_path(
     return Path(reserved)
 
 
-def _assert_db_not_in_use(db_path: Path) -> None:
-    """Best-effort guard: refuse restore when the live DB appears active.
+def _acquire_exclusive_lock(db_path: Path) -> sqlite3.Connection | None:
+    """Open the live DB, fold in any WAL, and hold an EXCLUSIVE write lock.
 
-    Detection strategy:
-      * if -wal/-shm sidecars exist, run PRAGMA wal_checkpoint(PASSIVE) and
-        refuse when SQLite reports BUSY (active readers/writers pinning WAL);
-      * acquire BEGIN IMMEDIATE with busy_timeout=0 (fails if another writer holds
-        the DB lock).
+    Returns an open connection that owns a `BEGIN IMMEDIATE` write transaction on
+    `db_path`, or ``None`` when the file does not exist (nothing to lock). The
+    caller MUST close the returned connection (ROLLBACK happens implicitly on
+    close) once the swap is complete — the lock is held the entire time so the
+    not-in-use check and the file swap are one indivisible critical section, with
+    no TOCTOU window for another writer to slip in between.
 
-    This is intentionally conservative around active WAL activity before restore,
-    which would otherwise overwrite db.sqlite then unlink sidecars.
+    Detection strategy (busy_timeout=0 so we fail fast rather than block):
+      * if -wal/-shm sidecars exist, run PRAGMA wal_checkpoint(TRUNCATE) to fold
+        the WAL back into the main file and zero the WAL; refuse when SQLite
+        reports BUSY (active readers/writers pinning the WAL);
+      * acquire BEGIN IMMEDIATE (fails if another writer holds the DB lock).
+
+    To avoid self-deadlock the caller must NOT open a second SQLite connection to
+    `db_path` while this lock is held — the swap uses plain filesystem ops only.
     """
     if not db_path.exists():
-        return
+        return None
 
     conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=0)
-    tx_started = False
     try:
         conn.execute("PRAGMA busy_timeout = 0")
 
@@ -327,7 +333,7 @@ def _assert_db_not_in_use(db_path: Path) -> None:
         if wal.exists() or shm.exists():
             try:
                 busy, _log_frames, _ckpt_frames = conn.execute(
-                    "PRAGMA wal_checkpoint(PASSIVE)"
+                    "PRAGMA wal_checkpoint(TRUNCATE)"
                 ).fetchone()
             except sqlite3.OperationalError as exc:
                 raise RestoreError(
@@ -342,16 +348,16 @@ def _assert_db_not_in_use(db_path: Path) -> None:
 
         try:
             conn.execute("BEGIN IMMEDIATE")
-            tx_started = True
         except sqlite3.OperationalError as exc:
             raise RestoreError(
                 f"refusing to restore: live database appears in use at {db_path} "
                 f"(could not acquire write lock: {exc})"
             ) from exc
-    finally:
-        if tx_started:
-            conn.execute("ROLLBACK")
+    except BaseException:
         conn.close()
+        raise
+
+    return conn
 
 
 def restore(
@@ -364,13 +370,18 @@ def restore(
 
     1. Verify the incoming snapshot; if it fails integrity, RAISE (a corrupt
        snapshot is never swapped in) — the live DB is left untouched.
-    2. Refuse restore when the live DB appears in use (best-effort lock/WAL
-       activity detection) so we never overwrite an actively-used database.
+    2. Acquire an EXCLUSIVE write lock on the live DB (which also refuses when it
+       appears in use) and HOLD it across the swap, so the not-in-use check and
+       the swap are one indivisible critical section with no TOCTOU window.
     3. Back up the *current* db_path (if present) to a collision-proof,
        timestamped sidecar before overwriting, into `backup_dir` if given, else
        alongside db_path.
-    4. Copy the snapshot over db_path and remove any stale -wal/-shm sidecars so
-       the restored file is authoritative.
+    4. Stage the snapshot into a temp file in the SAME directory as db_path and
+       `os.replace()` it into place — an atomic rename on the same filesystem.
+       The live file is never overwritten in place, so a crash / disk-full
+       mid-copy leaves the ORIGINAL DB fully intact rather than a truncated one.
+    5. Drop any stale -wal/-shm sidecars so the restored main file is the single
+       authoritative copy.
 
     The vault markdown files on disk are NOT touched: the projector reconciles
     forward from `vault_state` in the restored DB. Full bare-machine vault
@@ -391,20 +402,47 @@ def restore(
             f"{len(report['hash_mismatches'])} hash mismatch(es))"
         )
 
-    _assert_db_not_in_use(db_path)
-
-    previous_backup: Path | None = None
-    if db_path.exists():
-        previous_backup = _reserve_pre_restore_backup_path(db_path, backup_dir)
-        shutil.copy2(db_path, previous_backup)
-
-    # Swap: copy snapshot over db_path, then drop stale WAL/SHM sidecars.
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(snapshot_path, db_path)
+
+    # Hold an exclusive lock on the live DB for the entire swap. The lock
+    # connection is the ONLY connection we open against db_path here, so the
+    # os.replace() below cannot deadlock against ourselves.
+    lock_conn = _acquire_exclusive_lock(db_path)
+    previous_backup: Path | None = None
+    try:
+        # The WAL (if any) has been folded into the main file by the lock
+        # acquisition, so the pre-restore backup captures a complete DB.
+        if db_path.exists():
+            previous_backup = _reserve_pre_restore_backup_path(db_path, backup_dir)
+            shutil.copy2(db_path, previous_backup)
+
+        # Stage the snapshot beside db_path (same filesystem) then atomically
+        # rename it over the live file. On ANY failure the temp file is removed
+        # and the live DB is left exactly as it was.
+        fd, tmp_name = tempfile.mkstemp(
+            dir=db_path.parent, prefix=f"{db_path.name}.restore-"
+        )
+        os.close(fd)
+        tmp_path = Path(tmp_name)
+        try:
+            shutil.copy2(snapshot_path, tmp_path)
+            os.replace(tmp_path, db_path)
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
+    finally:
+        if lock_conn is not None:
+            try:
+                lock_conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            lock_conn.close()
+
+    # The restored main file is authoritative; drop any stale WAL/SHM sidecars
+    # left over from the previous DB so they can't mask the restored content.
     for suffix in ("-wal", "-shm"):
         sidecar = db_path.with_name(db_path.name + suffix)
-        if sidecar.exists():
-            sidecar.unlink()
+        sidecar.unlink(missing_ok=True)
 
     return {
         "restored_from": snapshot_path,

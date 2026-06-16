@@ -5,6 +5,7 @@ the real ~/.engram/db.sqlite. The maintenance module is path-explicit by design.
 """
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -455,6 +456,107 @@ def test_restore_proceeds_when_live_db_not_in_use(tmp_path):
     assert result["previous_backup"] is not None
     assert Path(result["previous_backup"]).exists()
     assert maintenance.verify(live)["ok"] is True
+
+
+def test_restore_atomically_swaps_in_snapshot(tmp_path):
+    # A successful restore swaps the snapshot in via os.replace: the live file's
+    # bytes become exactly the snapshot's bytes (a true atomic swap, not an
+    # in-place overwrite), and no stale WAL/SHM sidecars are left behind.
+    live = tmp_path / "db.sqlite"
+    hashes = _make_db(live)
+    snap = tmp_path / "snap.sqlite"
+    maintenance.snapshot(live, snap)
+
+    # Diverge the live DB so it is byte-different from the snapshot.
+    conn = _open(live)
+    conn.execute("UPDATE content SET body = 'tampered' WHERE hash = ?", (hashes["h1"],))
+    conn.commit()
+    conn.close()
+    assert live.read_bytes() != snap.read_bytes()
+
+    result = maintenance.restore(snap, live)
+
+    assert result["restored_from"] == snap
+    # Atomic swap: live is now byte-for-byte the snapshot.
+    assert live.read_bytes() == snap.read_bytes()
+    assert not live.with_name(live.name + "-wal").exists()
+    assert not live.with_name(live.name + "-shm").exists()
+    assert maintenance.verify(live)["ok"] is True
+
+
+def test_restore_failure_leaves_live_db_intact(tmp_path, monkeypatch):
+    # If the swap fails mid-restore (os.replace raises — e.g. crash / disk-full),
+    # the live DB must remain the ORIGINAL intact database, never truncated or
+    # partial, and no temp staging file may be left behind.
+    live = tmp_path / "db.sqlite"
+    _make_db(live)
+    snap = tmp_path / "snap.sqlite"
+    maintenance.snapshot(live, snap)
+
+    before = live.read_bytes()
+
+    def _boom(src, dst):
+        raise OSError("simulated disk-full during restore")
+
+    monkeypatch.setattr(maintenance.os, "replace", _boom)
+
+    with pytest.raises(OSError, match="simulated disk-full"):
+        maintenance.restore(snap, live)
+
+    # Original DB is byte-for-byte intact (not truncated/empty) and still valid.
+    assert live.read_bytes() == before
+    assert maintenance.verify(live)["ok"] is True
+    # No leftover staging temp file in the DB directory.
+    leftovers = list(tmp_path.glob("db.sqlite.restore-*"))
+    assert leftovers == []
+
+
+def test_restore_handles_stale_wal_sidecars(tmp_path):
+    # Simulate a crash that left a stale -wal/-shm pair next to the main file:
+    # data committed only into the WAL (a "marker") was never checkpointed. The
+    # restored snapshot must be authoritative — the stale WAL must NOT leak its
+    # marker into the result, and the sidecars must be gone afterwards.
+    snap_source = tmp_path / "source.sqlite"
+    _make_db(snap_source)
+    snap = tmp_path / "snap.sqlite"
+    maintenance.snapshot(snap_source, snap)
+
+    # Build a crash state: a WAL-mode DB whose latest write lives only in -wal.
+    crash = tmp_path / "db.sqlite"
+    crash_wal = crash.with_name(crash.name + "-wal")
+    crash_shm = crash.with_name(crash.name + "-shm")
+    src_conn = _open(snap_source)
+    src_conn.execute("PRAGMA journal_mode=WAL")
+    src_conn.execute("PRAGMA wal_autocheckpoint=0")
+    marker = content_hash("stale-wal-only marker body")
+    src_conn.execute(
+        "INSERT INTO content (hash, body, title, tombstoned) VALUES (?, ?, ?, 0)",
+        (marker, "stale-wal-only marker body", "t"),
+    )
+    src_conn.commit()  # committed into the WAL, NOT checkpointed into the main file
+    # Copy main + live sidecars out while still open => a realistic crash image.
+    shutil.copy2(snap_source, crash)
+    shutil.copy2(snap_source.with_name(snap_source.name + "-wal"), crash_wal)
+    shutil.copy2(snap_source.with_name(snap_source.name + "-shm"), crash_shm)
+    src_conn.close()
+
+    assert crash_wal.exists() and crash_shm.exists()
+
+    result = maintenance.restore(snap, crash)
+
+    assert result["restored_from"] == snap
+    # Restored content is authoritative: byte-identical to the snapshot, with the
+    # stale sidecars removed and the WAL-only marker absent.
+    assert crash.read_bytes() == snap.read_bytes()
+    assert not crash_wal.exists()
+    assert not crash_shm.exists()
+    conn = _open(crash)
+    row = conn.execute(
+        "SELECT COUNT(*) FROM content WHERE hash = ?", (marker,)
+    ).fetchone()
+    conn.close()
+    assert row[0] == 0
+    assert maintenance.verify(crash)["ok"] is True
 
 
 # --------------------------------------------------------------------------- #
