@@ -1,3 +1,7 @@
+import asyncio
+import threading
+import time
+
 import httpx
 
 from tests.rag import fresh_conn
@@ -27,6 +31,7 @@ async def test_grounding_endpoint_returns_verdict_and_block(tmp_path, monkeypatc
     _stub_cfg(monkeypatch)
     conn = fresh_conn(tmp_path)
     _add(conn, "h1", "Docker OOM", "flashinfer sm120 first start OOM guardrails MAX_JOBS")
+    conn.commit()
     _stub_retrieval(monkeypatch, [("h1", 0.91)])
     from engram.rag.serve import build_serve_app
     app = build_serve_app(conn)
@@ -49,6 +54,32 @@ async def test_grounding_none_on_empty(tmp_path, monkeypatch):
     assert r.json()["verdict"] == "NONE" and r.json()["block"] == ""
 
 
+async def test_grounding_offloads_work_from_event_loop(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    from engram.rag import serve as serve_mod
+
+    started = threading.Event()
+
+    def slow_ground(*_a, **_k):
+        started.set()
+        time.sleep(0.2)
+        return {"verdict": "NONE", "block": "", "hashes": []}
+
+    monkeypatch.setattr(serve_mod, "ground", slow_ground)
+    app = serve_mod.build_serve_app(fresh_conn(tmp_path))
+    async with await _client(app) as c:
+        grounding_task = asyncio.create_task(c.post("/grounding", json={"query": "q"}))
+        await asyncio.to_thread(started.wait, 1.0)
+        t0 = time.perf_counter()
+        health = await c.get("/healthz")
+        dt = time.perf_counter() - t0
+        grounding = await grounding_task
+
+    assert health.status_code == 200
+    assert grounding.status_code == 200
+    assert dt < 0.1
+
+
 async def test_grounding_internal_error_is_500(tmp_path, monkeypatch):
     _stub_cfg(monkeypatch)
     from engram.rag import serve as serve_mod
@@ -65,6 +96,7 @@ async def test_prime_endpoint_returns_block(tmp_path, monkeypatch):
     conn = fresh_conn(tmp_path)
     conn.execute("INSERT INTO goals (id,text,status,priority,metadata,created_at,updated_at) "
                  "VALUES ('g1','ship phase 2','active',5,'{}','2026-06-10T00:00:00Z','2026-06-10T00:00:00Z')")
+    conn.commit()
     from engram.rag.serve import build_serve_app
     app = build_serve_app(conn)
     async with await _client(app) as c:
