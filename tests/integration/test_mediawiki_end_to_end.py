@@ -84,9 +84,12 @@ async def test_mediawiki_full_supersede_flow(tmp_path, monkeypatch, httpd):
 
     from types import SimpleNamespace
 
-    from engram.common import config as cfg_mod
     fake = SimpleNamespace(rag=SimpleNamespace(near_dup_threshold=0.92))
-    monkeypatch.setattr(cfg_mod, "load_config", lambda: fake)
+    # Patch where gate() looks the symbol up (engram.dedup.load_config), not
+    # where it's defined: dedup binds load_config at import time, so patching the
+    # config module is missed once dedup is already imported (e.g. by an earlier
+    # test in the suite), leaving the real ~/.engram/config.yml loader in place.
+    monkeypatch.setattr("engram.dedup.load_config", lambda: fake)
 
     # Importing populates ADAPTERS
     import engram.poller.adapters.mediawiki_api  # noqa: F401
