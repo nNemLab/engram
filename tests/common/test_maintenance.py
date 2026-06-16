@@ -458,10 +458,11 @@ def test_restore_proceeds_when_live_db_not_in_use(tmp_path):
     assert maintenance.verify(live)["ok"] is True
 
 
-def test_restore_atomically_swaps_in_snapshot(tmp_path):
-    # A successful restore swaps the snapshot in via os.replace: the live file's
-    # bytes become exactly the snapshot's bytes (a true atomic swap, not an
-    # in-place overwrite), and no stale WAL/SHM sidecars are left behind.
+def test_restore_atomically_swaps_in_snapshot(tmp_path, monkeypatch):
+    # A successful restore swaps the snapshot in via an atomic os.replace rename,
+    # NOT an in-place overwrite. We prove the rename path is actually taken (spy
+    # os.replace) and that the live file's inode changes (an in-place copy2 would
+    # keep the same inode), in addition to bytes matching and no sidecars left.
     live = tmp_path / "db.sqlite"
     hashes = _make_db(live)
     snap = tmp_path / "snap.sqlite"
@@ -474,9 +475,29 @@ def test_restore_atomically_swaps_in_snapshot(tmp_path):
     conn.close()
     assert live.read_bytes() != snap.read_bytes()
 
+    inode_before = live.stat().st_ino
+
+    replace_calls: list[tuple[Path, Path]] = []
+    real_replace = maintenance.os.replace
+
+    def spy_replace(src, dst):
+        replace_calls.append((Path(src), Path(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(maintenance.os, "replace", spy_replace)
+
     result = maintenance.restore(snap, live)
 
     assert result["restored_from"] == snap
+    # The swap went through os.replace exactly once, renaming a temp staging file
+    # (beside the live DB) onto db_path — not overwriting db_path in place.
+    assert len(replace_calls) == 1
+    staged_src, replace_dst = replace_calls[0]
+    assert replace_dst == live
+    assert staged_src.parent == live.parent
+    assert staged_src.name.startswith("db.sqlite.restore-")
+    # Atomic rename => the live path now points at a NEW inode.
+    assert live.stat().st_ino != inode_before
     # Atomic swap: live is now byte-for-byte the snapshot.
     assert live.read_bytes() == snap.read_bytes()
     assert not live.with_name(live.name + "-wal").exists()
@@ -484,10 +505,16 @@ def test_restore_atomically_swaps_in_snapshot(tmp_path):
     assert maintenance.verify(live)["ok"] is True
 
 
-def test_restore_failure_leaves_live_db_intact(tmp_path, monkeypatch):
-    # If the swap fails mid-restore (os.replace raises — e.g. crash / disk-full),
-    # the live DB must remain the ORIGINAL intact database, never truncated or
-    # partial, and no temp staging file may be left behind.
+@pytest.mark.parametrize(
+    "fault",
+    ["copy_to_temp", "os_replace", "lock_acquire"],
+    ids=["copy-to-temp-fails", "os-replace-fails", "lock-acquire-fails"],
+)
+def test_restore_failure_leaves_live_db_intact(tmp_path, monkeypatch, fault):
+    # Whatever stage of the restore blows up — staging the snapshot copy, the
+    # atomic rename, or acquiring the exclusive lock / WAL checkpoint — the live
+    # DB must remain the ORIGINAL intact database (never truncated/partial) and
+    # stay verify()-clean, with no temp staging file left behind.
     live = tmp_path / "db.sqlite"
     _make_db(live)
     snap = tmp_path / "snap.sqlite"
@@ -495,12 +522,34 @@ def test_restore_failure_leaves_live_db_intact(tmp_path, monkeypatch):
 
     before = live.read_bytes()
 
-    def _boom(src, dst):
-        raise OSError("simulated disk-full during restore")
+    if fault == "os_replace":
 
-    monkeypatch.setattr(maintenance.os, "replace", _boom)
+        def _boom_replace(src, dst):
+            raise OSError("simulated disk-full during rename")
 
-    with pytest.raises(OSError, match="simulated disk-full"):
+        monkeypatch.setattr(maintenance.os, "replace", _boom_replace)
+        expected = (OSError, "simulated disk-full")
+    elif fault == "copy_to_temp":
+        real_copy2 = maintenance.shutil.copy2
+
+        def _boom_copy2(src, dst, *args, **kwargs):
+            # Fail only the snapshot->temp staging copy; let the pre-restore
+            # backup copy succeed so we exercise the staging failure path.
+            if Path(src) == snap:
+                raise OSError("simulated disk-full during temp staging")
+            return real_copy2(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(maintenance.shutil, "copy2", _boom_copy2)
+        expected = (OSError, "simulated disk-full")
+    else:  # lock_acquire
+
+        def _boom_lock(db_path):
+            raise maintenance.RestoreError("simulated lock/checkpoint failure")
+
+        monkeypatch.setattr(maintenance, "_acquire_exclusive_lock", _boom_lock)
+        expected = (maintenance.RestoreError, "simulated lock/checkpoint failure")
+
+    with pytest.raises(expected[0], match=expected[1]):
         maintenance.restore(snap, live)
 
     # Original DB is byte-for-byte intact (not truncated/empty) and still valid.

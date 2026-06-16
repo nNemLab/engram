@@ -430,6 +430,16 @@ def restore(
         except BaseException:
             tmp_path.unlink(missing_ok=True)
             raise
+
+        # Still INSIDE the held exclusive lock: drop any stale -wal/-shm sidecars
+        # left over from the previous DB. Doing this before releasing the lock
+        # keeps the restored main file and its sidecar state a single indivisible
+        # update — no other process can open db_path (and observe a stale sidecar,
+        # or create fresh legitimate sidecars we would then wrongly unlink) until
+        # the DB is fully settled.
+        for suffix in ("-wal", "-shm"):
+            sidecar = db_path.with_name(db_path.name + suffix)
+            sidecar.unlink(missing_ok=True)
     finally:
         if lock_conn is not None:
             try:
@@ -437,12 +447,6 @@ def restore(
             except sqlite3.Error:
                 pass
             lock_conn.close()
-
-    # The restored main file is authoritative; drop any stale WAL/SHM sidecars
-    # left over from the previous DB so they can't mask the restored content.
-    for suffix in ("-wal", "-shm"):
-        sidecar = db_path.with_name(db_path.name + suffix)
-        sidecar.unlink(missing_ok=True)
 
     return {
         "restored_from": snapshot_path,
