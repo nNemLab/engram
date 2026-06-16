@@ -54,6 +54,18 @@ def test_skip_env_bypasses_guard(tmp_path, monkeypatch):
     init_schema(conn, 384)  # bypassed: no raise
 
 
+@pytest.mark.parametrize("value", ["0", "false", "no", "true", "", "2", "yes"])
+def test_skip_env_only_exact_one_bypasses(tmp_path, monkeypatch, value):
+    """Only the literal "1" disables the guard; falsey/other strings keep it
+    armed so a stray value can't silently bypass the check (#162)."""
+    conn = _fresh(tmp_path)
+    conn.execute("INSERT INTO schema_version (version) VALUES (?)",
+                 (_code_schema_version() + 5,))
+    monkeypatch.setenv("ENGRAM_SKIP_VERSION_CHECK", value)
+    with pytest.raises(IncompatibleDatabaseError, match="newer version"):
+        init_schema(conn, 384)
+
+
 def test_embeddings_dim_none_when_table_absent(tmp_path):
     conn = dbmod._connect(Path(tmp_path) / "empty.sqlite")
     assert _embeddings_table_dim(conn) is None

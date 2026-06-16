@@ -13,8 +13,15 @@ from collections.abc import AsyncIterator
 import httpx
 
 from . import Candidate, matches_globs, register
+from ._http import AsyncRateLimiter, request_with_retry
 
 logger = logging.getLogger("engram.poller.github_repo")
+
+# Default inter-request spacing for GitHub API calls. 0 = no proactive spacing;
+# politeness is reactive -- every request flows through request_with_retry, which
+# honors Retry-After and the X-RateLimit-* primary-rate-limit headers. Override
+# per source with config `request_interval_ms` to also space requests.
+DEFAULT_INTERVAL_MS = 0
 
 _REPO_RE = re.compile(r"https?://github\.com/([^/]+)/([^/]+?)/?(?:$|\.git$)")
 
@@ -132,31 +139,48 @@ class GitHubRepoAdapter:
             await self._client.aclose()
             self._client = None
 
+    async def _get(
+        self,
+        url: str,
+        rate_limiter: AsyncRateLimiter,
+        *,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        """GitHub GET routed through the shared politeness/rate-limit helper so
+        every call honors Retry-After and the X-RateLimit-* headers."""
+        assert self._client is not None  # _ensure_client() ran in fetch()
+        return await request_with_retry(
+            self._client, url, params=params, headers=headers, rate_limiter=rate_limiter,
+        )
+
     async def fetch(self, source: dict) -> AsyncIterator[Candidate]:
         self._ensure_client()
         cfg = json.loads(source.get("config") or "{}")
         include = cfg.get("include", [])
         exclude = cfg.get("exclude", [])
         branch = cfg.get("branch", "main")
+        interval_ms = int(cfg.get("request_interval_ms", DEFAULT_INTERVAL_MS))
+        rate_limiter = AsyncRateLimiter(interval_ms=interval_ms)
         cursor = json.loads(source.get("cursor") or "{}")
         last_sha: str | None = cursor.get("last_sha")
         owner, repo = _parse_repo(source["url"])
 
-        head_resp = await self._client.get(f"/repos/{owner}/{repo}/branches/{branch}")
+        head_resp = await self._get(f"/repos/{owner}/{repo}/branches/{branch}", rate_limiter)
         head_resp.raise_for_status()
         head_sha = head_resp.json()["commit"]["sha"]
 
         if last_sha and last_sha != head_sha:
-            paths = await self._changed_paths(owner, repo, last_sha, head_sha)
+            paths = await self._changed_paths(owner, repo, last_sha, head_sha, rate_limiter)
         elif last_sha == head_sha:
             paths = []
         else:
-            paths = await self._tree_paths(owner, repo, head_sha)
+            paths = await self._tree_paths(owner, repo, head_sha, rate_limiter)
 
         for path in paths:
             if not matches_globs(path, include, exclude):
                 continue
-            body = await self._fetch_file(owner, repo, head_sha, path)
+            body = await self._fetch_file(owner, repo, head_sha, path, rate_limiter)
             if body is None:
                 continue
             url = f"https://github.com/{owner}/{repo}/blob/{head_sha}/{path}"
@@ -168,7 +192,9 @@ class GitHubRepoAdapter:
 
         source["cursor"] = json.dumps({"last_sha": head_sha})
 
-    async def _tree_paths(self, owner: str, repo: str, sha: str) -> list[str]:
+    async def _tree_paths(
+        self, owner: str, repo: str, sha: str, rate_limiter: AsyncRateLimiter,
+    ) -> list[str]:
         """Walk the repository tree recursively with one request per subtree.
 
         Returns only blob paths (not dirs, symlinks, or submodules).
@@ -179,8 +205,8 @@ class GitHubRepoAdapter:
         while queue:
             tree_sha, prefix = queue.pop()
 
-            r = await self._client.get(
-                f"/repos/{owner}/{repo}/git/trees/{tree_sha}",
+            r = await self._get(
+                f"/repos/{owner}/{repo}/git/trees/{tree_sha}", rate_limiter,
             )
             r.raise_for_status()
             data = r.json()
@@ -205,7 +231,9 @@ class GitHubRepoAdapter:
 
         return all_blobs
 
-    async def _changed_paths(self, owner: str, repo: str, base: str, head: str) -> list[str]:
+    async def _changed_paths(
+        self, owner: str, repo: str, base: str, head: str, rate_limiter: AsyncRateLimiter,
+    ) -> list[str]:
         """Drain ALL pages of the compare API (follows ``Link`` headers).
         The GitHub compare API caps each response at 3 000 files; the pagination
         Link header tells us where to fetch next.  We follow it until exhausted
@@ -213,7 +241,7 @@ class GitHubRepoAdapter:
         all_files: list[str] = []
         url = f"/repos/{owner}/{repo}/compare/{base}...{head}"
         while url:
-            r = await self._client.get(url)
+            r = await self._get(url, rate_limiter)
             r.raise_for_status()
             data = r.json()
             all_files.extend(
@@ -223,9 +251,11 @@ class GitHubRepoAdapter:
             url = _next_page_url(r.headers.get("link", ""))
         return all_files
 
-    async def _fetch_file(self, owner: str, repo: str, sha: str, path: str) -> str | None:
-        r = await self._client.get(
-            f"/repos/{owner}/{repo}/contents/{path}", params={"ref": sha},
+    async def _fetch_file(
+        self, owner: str, repo: str, sha: str, path: str, rate_limiter: AsyncRateLimiter,
+    ) -> str | None:
+        r = await self._get(
+            f"/repos/{owner}/{repo}/contents/{path}", rate_limiter, params={"ref": sha},
             headers={"accept": "application/vnd.github.v3.raw"},
         )
         if r.status_code == 404:

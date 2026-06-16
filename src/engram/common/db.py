@@ -464,8 +464,10 @@ def check_compatibility(conn: sqlite3.Connection, embed_dim: int) -> None:
       corpus is re-embedded (see issue #43).
 
     Bypass with `ENGRAM_SKIP_VERSION_CHECK=1` (recovery only — may corrupt data).
+    Only the exact value "1" disables the guard; "0"/"false"/anything else leaves
+    it armed, so a stray non-empty value can't silently bypass the check.
     """
-    if os.environ.get(_SKIP_VERSION_CHECK):
+    if os.environ.get(_SKIP_VERSION_CHECK) == "1":
         return
     code_ver = _code_schema_version()
     db_ver = _db_schema_version(conn)
