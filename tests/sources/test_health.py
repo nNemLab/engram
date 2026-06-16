@@ -145,6 +145,19 @@ def test_erroring_source_with_null_last_success(conn):
     assert rec["status"] == "erroring"
 
 
+def test_overdue_source_with_non_z_timestamp_still_detected(conn):
+    from engram.sources.health import source_health
+    _add_source(
+        conn, "late-mixed",
+        next_poll_at="2000-01-01T00:00:00+00:00",
+        last_polled_at="1999-12-01T00:00:00Z",
+        last_success_at="1999-12-01T00:00:00Z",
+    )
+    rec = _by_id(source_health(conn))["late-mixed"]
+    assert rec["overdue"] is True
+    assert rec["status"] == "overdue"
+
+
 def test_overdue_source(conn):
     from engram.sources.health import source_health
     _add_source(
@@ -166,6 +179,19 @@ def test_no_content_dup_ratio_is_zero(conn):
     assert rec["content_current"] == 0
     assert rec["dup_ratio"] == 0.0
     assert rec["last_new_content_at"] is None
+
+
+def test_erroring_with_mixed_precision_ordering(conn):
+    from engram.sources.health import source_health
+    _add_source(
+        conn, "mixed-prec",
+        error_count=1,
+        last_polled_at="2026-06-05T00:00:00.100Z",
+        last_success_at="2026-06-05T00:00:00Z",
+        next_poll_at="2099-01-01T00:00:00Z",
+    )
+    rec = _by_id(source_health(conn))["mixed-prec"]
+    assert rec["status"] == "erroring"
 
 
 def test_mcp_tool_returns_records(conn):

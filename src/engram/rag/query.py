@@ -1,6 +1,7 @@
 """Hybrid retrieval: vec0 (dense) + FTS5 (sparse), fused via Reciprocal Rank Fusion."""
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -11,6 +12,8 @@ from ..common.config import load_config
 from ._cosine import l2_to_cosine
 from .embed import embed_one
 from .usage import usage_factor
+
+logger = logging.getLogger("engram.rag.query")
 
 # Word tokens for building a safe FTS5 MATCH expression. `\w+` (Unicode by
 # default for str patterns) drops every operator-significant character.
@@ -86,9 +89,12 @@ def _parse_timestamp(ts: str | None) -> datetime | None:
     if not ts:
         return None
     try:
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def _confidence_decay(fetched_at: str | None, half_life_days: int) -> float:
@@ -141,6 +147,26 @@ def _tier_weight(weights: dict[str, float], tier: str | None) -> float:
     return weights.get(t, DEFAULT_TIER_WEIGHTS.get(t, 0.5))
 
 
+def _section_text(body: str, query: str, *, max_chars: int = 1200) -> str:
+    """Return a paragraph-sized section biased toward query terms."""
+    if not body:
+        return ""
+    tokens = {t.lower() for t in _FTS_TOKEN.findall(query)}
+    paras = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
+    if not paras:
+        paras = [body.strip()]
+    chosen = paras[0]
+    if tokens:
+        for p in paras:
+            low = p.lower()
+            if any(t in low for t in tokens):
+                chosen = p
+                break
+    if len(chosen) <= max_chars:
+        return chosen
+    return chosen[: max_chars - 1] + "…"
+
+
 def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = None,
                   log_retrieval: bool = True,
                   exclude_source_tiers: list[str] | None = None,
@@ -149,93 +175,117 @@ def hybrid_search(conn: sqlite3.Connection, query: str, *, top_k: int | None = N
                   level: str = "snippet") -> list[Hit]:
     cfg = load_config()
     k = top_k or cfg.rag.top_k
+    if level not in {"snippet", "section", "full"}:
+        raise ValueError(f"unsupported level: {level!r}")
     # Over-fetch when filtering so we can still return ~k hits after the cut.
     fetch_mult = 4 if (exclude_source_tiers or exclude_kinds) else 2
 
-    rankings: list[list[tuple[str, float]]] = []
-    dense_map: dict[str, float] = {}
+    since_dt = _parse_timestamp(since)
+    until_dt = _parse_timestamp(until)
+
+    q_emb: bytes | None = None
+    dense_available = False
     try:
         q_emb = embed_one(query)
-        dv = _vector_hits(conn, q_emb, k * fetch_mult)
-        dense_map = dict(dv)
-        rankings.append(dv)
-    except Exception:
-        # Embedding failure should not kill retrieval; fall back to BM25 only.
-        pass
-    try:
-        rankings.append(_bm25_hits(conn, query, k * fetch_mult))
-    except Exception:
-        # Defence in depth: a malformed FTS expression must never kill retrieval;
-        # fall back to dense-only rather than raising.
-        pass
+        dense_available = True
+    except Exception as exc:
+        logger.warning("dense retrieval unavailable; falling back without embeddings",
+                       extra={"mode": "dense", "cause": str(exc)}, exc_info=True)
 
-    fused = _rrf_fuse(rankings, k=k * fetch_mult, rrf_k=cfg.rag.rrf_k)
-    if not fused:
-        return []
+    rankings: list[list[tuple[str, float]]] = []
+    dense_map: dict[str, float] = {}
+    limit = max(k * fetch_mult, k)
+    max_limit = max(limit, k) * 16
 
-    hashes = [h for h, _ in fused]
-    placeholders = ",".join("?" * len(hashes))
-    rows = conn.execute(
-        f"SELECT hash, title, body, source_url, source_tier, fetched_at, confidence, kind "
-        f"FROM content WHERE hash IN ({placeholders}) AND tombstoned = 0 AND is_current = 1",
-        hashes,
-    ).fetchall()
-    by_hash = {r["hash"]: r for r in rows}
-    excl_tiers = set(exclude_source_tiers or [])
-    excl_kinds = set(exclude_kinds or [])
+    while True:
+        iter_rankings: list[list[tuple[str, float]]] = []
+        if dense_available and q_emb is not None:
+            try:
+                dv = _vector_hits(conn, q_emb, limit)
+                dense_map.update(dict(dv))
+                iter_rankings.append(dv)
+            except Exception as exc:
+                logger.warning("dense retrieval failed during hybrid search",
+                               extra={"mode": "dense", "cause": str(exc)}, exc_info=True)
+                dense_available = False
+        try:
+            iter_rankings.append(_bm25_hits(conn, query, limit))
+        except Exception as exc:
+            logger.warning("FTS retrieval failed during hybrid search",
+                           extra={"mode": "fts", "cause": str(exc)}, exc_info=True)
 
-    weights = cfg.confidence.source_tier_weights
-    half_life = cfg.confidence.recency_half_life_days
-    recency_enabled = cfg.confidence.recency_score_enabled
-    recency_weight = cfg.confidence.recency_score_weight
-    recency_half_life = cfg.confidence.recency_score_half_life_days
-    hits: list[Hit] = []
-    for h, rrf_score in fused:
-        r = by_hash.get(h)
-        if not r:
-            continue
-        if r["source_tier"] in excl_tiers:
-            continue
-        if r["kind"] in excl_kinds:
-            continue
-        # Time-bounded queries: rows without `fetched_at` (NULL/empty) cannot be
-        # temporally placed, so they are excluded whenever either bound is active.
-        if (since or until) and not r["fetched_at"]:
-            continue
-        if since and r["fetched_at"] < since:
-            continue
-        if until and r["fetched_at"] >= until:
-            continue
-        tier_w = _tier_weight(weights, r["source_tier"])
-        decay = _confidence_decay(r["fetched_at"], half_life)
-        uf = usage_factor(conn, h, weight=cfg.grounding.usage_weight)
-        recency = _recency_score(
-            fetched_at=r["fetched_at"],
-            enabled=recency_enabled,
-            weight=recency_weight,
-            half_life_days=recency_half_life,
-        )
-        # Relevance combines the fused rank (recall, incl. BM25-only hits) with
-        # the dense cosine MAGNITUDE. RRF alone collapses relevance to a near-
-        # constant band, letting the confidence/tier/usage priors swamp it — an
-        # irrelevant but high-confidence note could outrank the dense-best hit.
-        # Adding dense_sim restores the real spread, so priors only reorder hits
-        # of comparable relevance (tie-break) rather than override clear gaps.
-        relevance = rrf_score + (dense_map.get(h) or 0.0)
-        ranked_score = relevance * (r["confidence"] or 0.5) * tier_w * decay * uf * recency
-        hits.append(Hit(
-            hash=h, title=r["title"], body=r["body"], score=ranked_score,
-            source_url=r["source_url"], confidence=r["confidence"], fetched_at=r["fetched_at"],
-            dense_sim=dense_map.get(h),
-        ))
+        rankings = [r for r in iter_rankings if r]
+        fused = _rrf_fuse(rankings, k=limit, rrf_k=cfg.rag.rrf_k)
+        if not fused:
+            return []
 
-    hits.sort(key=lambda x: x.score, reverse=True)
-    hits = hits[:k]
+        hashes = [h for h, _ in fused]
+        placeholders = ",".join("?" * len(hashes))
+        rows = conn.execute(
+            f"SELECT hash, title, body, source_url, source_tier, fetched_at, confidence, kind "
+            f"FROM content WHERE hash IN ({placeholders}) AND tombstoned = 0 AND is_current = 1",
+            hashes,
+        ).fetchall()
+        by_hash = {r["hash"]: r for r in rows}
+        excl_tiers = set(exclude_source_tiers or [])
+        excl_kinds = set(exclude_kinds or [])
+
+        weights = cfg.confidence.source_tier_weights
+        half_life = cfg.confidence.recency_half_life_days
+        recency_enabled = cfg.confidence.recency_score_enabled
+        recency_weight = cfg.confidence.recency_score_weight
+        recency_half_life = cfg.confidence.recency_score_half_life_days
+        # Avoid double age-decay on fetched_at: when recency scoring is enabled,
+        # confidence decay is disabled regardless of recency weight.
+        use_conf_decay = not recency_enabled
+
+        hits: list[Hit] = []
+        for h, rrf_score in fused:
+            r = by_hash.get(h)
+            if not r:
+                continue
+            if r["source_tier"] in excl_tiers:
+                continue
+            if r["kind"] in excl_kinds:
+                continue
+            fetched_at = _parse_timestamp(r["fetched_at"])
+            # Time-bounded queries: rows without parseable timestamps cannot be
+            # temporally placed, so they are excluded whenever either bound is active.
+            if (since_dt or until_dt) and fetched_at is None:
+                continue
+            if since_dt and fetched_at is not None and fetched_at < since_dt:
+                continue
+            if until_dt and fetched_at is not None and fetched_at >= until_dt:
+                continue
+            tier_w = _tier_weight(weights, r["source_tier"])
+            decay = _confidence_decay(r["fetched_at"], half_life) if use_conf_decay else 1.0
+            uf = usage_factor(conn, h, weight=cfg.grounding.usage_weight)
+            recency = _recency_score(
+                fetched_at=r["fetched_at"],
+                enabled=recency_enabled,
+                weight=recency_weight,
+                half_life_days=recency_half_life,
+            )
+            relevance = rrf_score + (dense_map.get(h) or 0.0)
+            ranked_score = relevance * (r["confidence"] or 0.5) * tier_w * decay * uf * recency
+            hits.append(Hit(
+                hash=h, title=r["title"], body=r["body"], score=ranked_score,
+                source_url=r["source_url"], confidence=r["confidence"], fetched_at=r["fetched_at"],
+                dense_sim=dense_map.get(h),
+            ))
+
+        hits.sort(key=lambda x: x.score, reverse=True)
+        if len(hits) >= k or limit >= max_limit or len(fused) < limit:
+            hits = hits[:k]
+            break
+        limit = min(limit * 2, max_limit)
+
     if level == "snippet":
         for h in hits:
             h.body = (h.body[:319] + "…") if len(h.body) > 320 else h.body
-    # level == "section"/"full": leave body as stored (section==full for now;
-    # true section extraction is a follow-up).
+    elif level == "section":
+        for h in hits:
+            h.body = _section_text(h.body, query)
 
     if log_retrieval and hits:
         # One event per query, with the list of returned hashes.

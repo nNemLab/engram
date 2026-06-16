@@ -231,12 +231,21 @@ def test_near_dup_detects_at_correct_cosine_threshold():
     d_20 = math.sqrt(2.0 * (1.0 - cos_20))    # ≈ 0.347
 
     mock_conn = Mock()
-    mock_cursor = Mock()
-    mock_cursor.fetchone.return_value = {
-        "content_hash": "existing_hash",
-        "distance": d_20,
-    }
-    mock_conn.execute.return_value = mock_cursor
+
+    class _VecCursor:
+        def fetchall(self):
+            return [{"content_hash": "existing_hash", "distance": d_20}]
+
+    class _LiveCursor:
+        def fetchone(self):
+            return {"ok": 1}
+
+    def _execute(sql, params=()):
+        if "FROM embeddings" in sql:
+            return _VecCursor()
+        return _LiveCursor()
+
+    mock_conn.execute.side_effect = _execute
 
     result = find_near(mock_conn, b"dummy", 0.92)
 

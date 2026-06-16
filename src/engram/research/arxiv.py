@@ -6,10 +6,13 @@ playbook later) to get the full text into the KB.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 
 from . import rerank
+
+logger = logging.getLogger("engram.research.arxiv")
 
 
 @dataclass
@@ -64,7 +67,14 @@ def search(query: str, *, k: int = 5, fetch_multiplier: int = 3,
                     abs_url=r.entry_id,
                     score=0.0,
                 ))
-            except Exception:
+            except Exception as exc:
+                logger.warning("dropping malformed arXiv entry",
+                               extra={
+                                   "query": query,
+                                   "entry_id": getattr(r, "entry_id", None),
+                                   "cause": str(exc),
+                               },
+                               exc_info=True)
                 continue
     except Exception as e:
         if not results:

@@ -49,6 +49,17 @@ async def test_grounding_none_on_empty(tmp_path, monkeypatch):
     assert r.json()["verdict"] == "NONE" and r.json()["block"] == ""
 
 
+async def test_grounding_internal_error_is_500(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    from engram.rag import serve as serve_mod
+    monkeypatch.setattr(serve_mod, "ground", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom")))
+    app = serve_mod.build_serve_app(fresh_conn(tmp_path))
+    async with await _client(app) as c:
+        r = await c.post("/grounding", json={"query": "flashinfer"})
+    assert r.status_code == 500
+    assert r.json()["error"] == "internal grounding failure"
+
+
 async def test_prime_endpoint_returns_block(tmp_path, monkeypatch):
     _stub_cfg(monkeypatch)
     conn = fresh_conn(tmp_path)
@@ -74,6 +85,17 @@ async def test_grounding_survives_special_chars(tmp_path, monkeypatch):
     async with await _client(app) as c:
         r = await c.post("/grounding", json={"query": "where does the engram dev instance run?"})
     assert r.status_code == 200
+
+
+async def test_prime_internal_error_is_500(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    from engram.rag import serve as serve_mod
+    monkeypatch.setattr(serve_mod, "prime", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom")))
+    app = serve_mod.build_serve_app(fresh_conn(tmp_path))
+    async with await _client(app) as c:
+        r = await c.post("/prime", json={"cwd": "/x"})
+    assert r.status_code == 500
+    assert r.json()["error"] == "internal prime failure"
 
 
 async def test_grounding_missing_query_is_400(tmp_path, monkeypatch):

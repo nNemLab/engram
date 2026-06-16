@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import sqlite3
 from collections.abc import AsyncIterator, Callable
 from typing import Any
@@ -16,6 +17,8 @@ from starlette.routing import Route
 
 from .grounding import ground
 from .prime import prime
+
+logger = logging.getLogger("engram.rag.serve")
 
 
 def build_serve_app(conn: sqlite3.Connection | None = None) -> Starlette:
@@ -47,10 +50,9 @@ def build_serve_app(conn: sqlite3.Connection | None = None) -> Starlette:
             return JSONResponse({"error": "query (non-empty string) required"}, status_code=400)
         try:
             out = await _run(ground, query=query, token_budget=body.get("token_budget"))
-        except Exception:
-            # Fail soft: never 500 a turn. The ambient hook treats this as "no
-            # relevant memory" rather than an error.
-            out = {"verdict": "NONE", "block": "", "hashes": [], "hits": []}
+        except Exception as exc:
+            logger.exception("/grounding failed", extra={"cause": str(exc)})
+            return JSONResponse({"error": "internal grounding failure"}, status_code=500)
         return JSONResponse(out)
 
     async def prime_(req: Request) -> JSONResponse:
@@ -65,8 +67,9 @@ def build_serve_app(conn: sqlite3.Connection | None = None) -> Starlette:
             )
         try:
             out = await _run(prime, cwd=cwd, token_budget=tb)
-        except Exception:
-            out = {"block": ""}
+        except Exception as exc:
+            logger.exception("/prime failed", extra={"cause": str(exc)})
+            return JSONResponse({"error": "internal prime failure"}, status_code=500)
         return JSONResponse(out)
 
     async def cite(req: Request) -> JSONResponse:

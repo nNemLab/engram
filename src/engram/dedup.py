@@ -101,22 +101,27 @@ def find_exact(conn: sqlite3.Connection, h: str) -> str | None:
 
 
 def find_near(conn: sqlite3.Connection, embedding: bytes, threshold: float) -> tuple[str, float] | None:
-    """Return (hash, similarity) of nearest neighbor if cosine similarity > threshold.
+    """Return (hash, similarity) of nearest current neighbor if cosine similarity >= threshold.
     sqlite-vec returns L2 distance by default — converted to cosine via normalised vectors.
     """
+    # Pull a small nearest-neighbor pool first, then filter to live/current rows.
+    # LIMIT 1 can miss a valid candidate when the top vector belongs to a stale row.
     cur = conn.execute(
         "SELECT content_hash, distance FROM embeddings "
         "WHERE embedding MATCH ? "
-        "AND content_hash IN (SELECT hash FROM content WHERE tombstoned = 0 AND is_current = 1) "
-        "ORDER BY distance LIMIT 1",
+        "ORDER BY distance LIMIT 10",
         (embedding,),
     )
-    row = cur.fetchone()
-    if not row:
-        return None
-    similarity = l2_to_cosine(float(row["distance"]))
-    if similarity >= threshold:
-        return row["content_hash"], similarity
+    for row in cur.fetchall():
+        live = conn.execute(
+            "SELECT 1 FROM content WHERE hash = ? AND tombstoned = 0 AND is_current = 1",
+            (row["content_hash"],),
+        ).fetchone()
+        if not live:
+            continue
+        similarity = l2_to_cosine(float(row["distance"]))
+        if similarity >= threshold:
+            return row["content_hash"], similarity
     return None
 
 
@@ -157,7 +162,7 @@ def insert_content(
 
 def _record_supersede_contradiction(
     conn: sqlite3.Connection, human_hash: str, upstream_hash: str,
-    source_url: str | None, actor: str,
+    source_url: str | None, actor: str, correlation_id: str | None,
 ) -> None:
     """Upsert a single unresolved contradiction for a protected row (#37).
 
@@ -185,7 +190,7 @@ def _record_supersede_contradiction(
         conn, "contradicted",
         {"hash_a": human_hash, "hash_b": upstream_hash,
          "detected_by": "poller", "source_url": source_url},
-        actor=actor,
+        actor=actor, correlation_id=correlation_id,
     )
 
 
@@ -343,8 +348,9 @@ def resolve_supersede(
             # Drop the embedding too, if the vec table is present (created at runtime).
             try:
                 conn.execute("DELETE FROM embeddings WHERE content_hash = ?", (upstream_hash,))
-            except sqlite3.OperationalError:
-                pass
+            except sqlite3.OperationalError as exc:
+                if "no such table" not in str(exc).lower():
+                    raise
         event_log.append(
             conn, "contradiction_resolved",
             {"hash_a": human_hash, "hash_b": upstream_hash, "resolution": "kept_a",
@@ -383,6 +389,13 @@ def gate(
     unique index, or invalidating this connection's WAL read snapshot -- the loser
     rolls back and retries against fresh state instead of crashing.
     """
+    if not body or not body.strip():
+        raise ValueError("body must be a non-empty string")
+    if not (0.0 <= confidence <= 1.0):
+        raise ValueError("confidence must be between 0.0 and 1.0")
+    if ttl_days is not None and ttl_days < 0:
+        raise ValueError("ttl_days must be >= 0 when provided")
+
     cfg = load_config()
     h = content_hash(body)
     for attempt in range(_MAX_GATE_RETRIES):
@@ -516,7 +529,9 @@ def _gate_once(
                         # back and re-resolve instead (#153): the fresh re-read sees
                         # the now-existing body and reclassifies as exact_dup.
                         raise _GateRetry()
-                    _record_supersede_contradiction(conn, live["hash"], h, source_url, actor)
+                    _record_supersede_contradiction(
+                        conn, live["hash"], h, source_url, actor, correlation_id
+                    )
                     return GateResult(outcome="supersede_blocked", hash=h)
                 # Unprotected supersede. Order matters so we never violate either
                 # constraint mid-sequence:
@@ -572,10 +587,15 @@ def _gate_once(
         if embedding is not None:
             near = find_near(conn, embedding, cfg.rag.near_dup_threshold)
             if near:
-                kept_hash, _sim = near
+                kept_hash, sim = near
                 event_log.append(
                     conn, "merged",
-                    {"hash_kept": kept_hash, "hash_tombstoned": h, "reason": "near_dup_at_write"},
+                    {
+                        "hash_kept": kept_hash,
+                        "hash_tombstoned": h,
+                        "reason": "near_dup_at_write",
+                        "similarity": sim,
+                    },
                     actor=actor, correlation_id=correlation_id,
                 )
                 return GateResult(outcome="near_dup", hash=h, merged_into=kept_hash)
