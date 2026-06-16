@@ -108,15 +108,23 @@ def on_retrieved(conn: sqlite3.Connection, evt: event_log.Event) -> None:
             if fraction < threshold:
                 continue
             new_score = min(1.0, fraction)
-            # #172: staleness is monotonic for a given hash; never regress the
-            # score on a later retrieval (e.g., refresh/re-stale cycles).
+            # #172: keep staleness_score monotonic for each hash.
+            # NOTE: this relies on schema 001 defining staleness_score as
+            # NOT NULL DEFAULT 0.0; SQLite scalar MAX(x, y) returns NULL if
+            # either argument is NULL.
             conn.execute(
                 "UPDATE content SET staleness_score = MAX(staleness_score, ?) WHERE hash = ?",
                 (new_score, row["hash"]),
             )
 
-            # #172: de-dupe demand-driven emissions so a repeatedly-retrieved
-            # stale row does not spam stale_marked / refresh_requested.
+            # #172: de-dupe demand-driven emissions.
+            # Intentionally all-time / lifetime-of-log scope: once a hash has any
+            # stale_marked/refresh_requested event, we do not emit another one.
+            # This is safe only while there is no refresh_requested consumer and
+            # no staleness-reset path. TODO: when refresh consumption/completion
+            # or supersede/un-stale markers exist, scope this to an "open" window
+            # (e.g., since last completion marker) so legitimate re-emission is
+            # not permanently suppressed.
             stale_marked_exists = conn.execute(
                 "SELECT 1 FROM events WHERE type = 'stale_marked' "
                 "AND json_extract(payload, '$.hash') = ? LIMIT 1",

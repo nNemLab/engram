@@ -37,6 +37,7 @@ SCHEMA_FILES = [
     "005_event_hash_chain.sql",
     "006_reactor_dead_letter.sql",
     "007_unique_current_per_url.sql",
+    "008_events_type_index.sql",
 ]
 
 
@@ -505,7 +506,9 @@ def test_migration_007_backfills_duplicate_current_rows(tmp_path):
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     # Apply everything up to (but not including) 007: no unique index yet.
-    _apply_schema(conn, SCHEMA_FILES[:-1])
+    # Keep this explicit so adding later migrations (e.g., 008+) doesn't
+    # accidentally include 007 and break the fixture setup.
+    _apply_schema(conn, SCHEMA_FILES[:6])
 
     url = "https://example.com/dup"
     for rev, body in [(1, "a"), (2, "b"), (3, "c")]:

@@ -22,6 +22,12 @@ from engram.reactor import reactor as rmod
 DIM = 4
 
 
+@pytest.fixture(autouse=True)
+def _reset_shutdown_flag(monkeypatch):
+    """Keep reactor shutdown global hermetic across tests."""
+    monkeypatch.setattr(rmod, "_SHUTDOWN_REQUESTED", False)
+
+
 class _StopLoop(Exception):
     """Sentinel used by patched time.sleep to stop infinite loops in tests."""
 
