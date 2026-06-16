@@ -69,7 +69,8 @@ async def test_grounding_offloads_work_from_event_loop(tmp_path, monkeypatch):
     app = serve_mod.build_serve_app(fresh_conn(tmp_path))
     async with await _client(app) as c:
         grounding_task = asyncio.create_task(c.post("/grounding", json={"query": "q"}))
-        await asyncio.to_thread(started.wait, 1.0)
+        started_ok = await asyncio.to_thread(started.wait, 1.0)
+        assert started_ok is True
         t0 = time.perf_counter()
         health = await c.get("/healthz")
         dt = time.perf_counter() - t0
@@ -78,6 +79,87 @@ async def test_grounding_offloads_work_from_event_loop(tmp_path, monkeypatch):
     assert health.status_code == 200
     assert grounding.status_code == 200
     assert dt < 0.1
+
+
+async def test_grounding_requests_run_concurrently_when_offloaded(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    from engram.rag import serve as serve_mod
+
+    inflight = 0
+    max_inflight = 0
+    guard = threading.Lock()
+
+    def slow_ground(*_a, **_k):
+        nonlocal inflight, max_inflight
+        with guard:
+            inflight += 1
+            max_inflight = max(max_inflight, inflight)
+        try:
+            time.sleep(0.2)
+            return {"verdict": "NONE", "block": "", "hashes": []}
+        finally:
+            with guard:
+                inflight -= 1
+
+    monkeypatch.setattr(serve_mod, "ground", slow_ground)
+    app = serve_mod.build_serve_app(fresh_conn(tmp_path))
+    async with await _client(app) as c:
+        t0 = time.perf_counter()
+        r1, r2 = await asyncio.gather(
+            c.post("/grounding", json={"query": "q1"}),
+            c.post("/grounding", json={"query": "q2"}),
+        )
+        dt = time.perf_counter() - t0
+
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert max_inflight >= 2
+    assert dt < 0.35
+
+
+async def test_cite_requests_remain_serialized(tmp_path, monkeypatch):
+    _stub_cfg(monkeypatch)
+    conn = fresh_conn(tmp_path)
+    full = "a1b2c3d4e5f6" + "0" * 52
+    conn.execute(
+        "INSERT INTO content (hash,title,body,source_url,source_tier,fetched_at,"
+        "confidence,kind,tombstoned) VALUES (?,?,?,?,?,?,?,?,0)",
+        (full, "t", "b", None, "manual", "2026-06-10T00:00:00Z", 0.8, "kb"),
+    )
+    conn.commit()
+
+    import engram.rag.usage as usage
+
+    inflight = 0
+    max_inflight = 0
+    guard = threading.Lock()
+
+    def slow_record_cited(*_a, **_k):
+        nonlocal inflight, max_inflight
+        with guard:
+            inflight += 1
+            max_inflight = max(max_inflight, inflight)
+        try:
+            time.sleep(0.2)
+            return 1
+        finally:
+            with guard:
+                inflight -= 1
+
+    monkeypatch.setattr(usage, "record_cited", slow_record_cited)
+    from engram.rag.serve import build_serve_app
+
+    app = build_serve_app(conn)
+    async with await _client(app) as c:
+        t0 = time.perf_counter()
+        r1, r2 = await asyncio.gather(
+            c.post("/cite", json={"hashes": [full[:12]], "turn_id": "t1"}),
+            c.post("/cite", json={"hashes": [full[:12]], "turn_id": "t2"}),
+        )
+        dt = time.perf_counter() - t0
+
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert max_inflight == 1
+    assert dt >= 0.35
 
 
 async def test_grounding_internal_error_is_500(tmp_path, monkeypatch):

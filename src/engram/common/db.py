@@ -222,9 +222,16 @@ SCHEMA_DIR = _PKG_SCHEMA if _PKG_SCHEMA.exists() else _REPO_SCHEMA
 SCHEMA_PATH = SCHEMA_DIR / "001_initial.sql"
 
 
-def _connect(db_path: Path) -> sqlite3.Connection:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), isolation_level=None, check_same_thread=False)
+def open_readonly_connection(path: Path) -> sqlite3.Connection:
+    """Open a short-lived worker-thread connection for read-heavy daemon paths.
+
+    This applies the same sqlite setup as the daemon's main connection
+    (sqlite-vec loaded, Row factory, WAL/foreign_keys/synchronous/busy_timeout)
+    but intentionally does NOT run schema init/migrations. Callers use it for
+    request-scoped reads against an already-initialized database.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
@@ -237,6 +244,10 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     # instead of immediately raising `database is locked` (#83).
     conn.execute("PRAGMA busy_timeout = 5000")
     return conn
+
+
+def _connect(db_path: Path) -> sqlite3.Connection:
+    return open_readonly_connection(db_path)
 
 
 def init_schema(conn: sqlite3.Connection, embed_dim: int = 384) -> None:
