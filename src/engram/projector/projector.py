@@ -15,11 +15,13 @@ from pathlib import Path
 from .. import log as event_log
 from ..common.config import load_config
 from ..common.db import get_connection, transaction
+from ..common.time import utcnow_iso
 from .renderers import RENDERERS
 
 logger = logging.getLogger("engram.projector")
 
 CURSOR_KEY = "projector"
+MAX_HANDLER_ATTEMPTS = 5
 
 
 def _atomic_write(path: Path, body: str) -> None:
@@ -157,6 +159,88 @@ def _handle_event(conn: sqlite3.Connection, vault: Path, evt: event_log.Event,
             _atomic_write(abs_path, body)
 
 
+def _bump_attempts(conn: sqlite3.Connection, evt: event_log.Event, exc: Exception) -> int:
+    """Record one more projector-failure attempt for `evt`; return the new count."""
+    conn.execute(
+        "INSERT INTO projector_attempts (event_id, attempts, last_error, last_attempt_ts) "
+        "VALUES (?, 1, ?, ?) "
+        "ON CONFLICT(event_id) DO UPDATE SET attempts = attempts + 1, "
+        "last_error = excluded.last_error, last_attempt_ts = excluded.last_attempt_ts",
+        (evt.id, repr(exc), utcnow_iso("ms")),
+    )
+    row = conn.execute(
+        "SELECT attempts FROM projector_attempts WHERE event_id = ?", (evt.id,)
+    ).fetchone()
+    return int(row["attempts"])
+
+
+def _clear_attempts(conn: sqlite3.Connection, event_id: int) -> None:
+    """Drop a per-event attempt counter once the event has been projected."""
+    conn.execute("DELETE FROM projector_attempts WHERE event_id = ?", (event_id,))
+
+
+def _dead_letter(
+    conn: sqlite3.Connection, evt: event_log.Event, attempts: int, exc: Exception
+) -> None:
+    """Move a budget-exhausted event into projector_dead_letter and drop its counter."""
+    conn.execute(
+        "INSERT OR IGNORE INTO projector_dead_letter "
+        "(event_id, event_type, attempts, error, dead_lettered_ts) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (evt.id, evt.type, attempts, repr(exc), utcnow_iso("ms")),
+    )
+    _clear_attempts(conn, evt.id)
+
+
+def _handle_failure(conn: sqlite3.Connection, evt: event_log.Event, exc: Exception) -> bool:
+    """Record a projector failure and decide whether to advance past this event."""
+    with transaction(conn):
+        attempts = _bump_attempts(conn, evt, exc)
+    if attempts < MAX_HANDLER_ATTEMPTS:
+        logger.error(
+            "projector failed for event %d (attempt %d/%d); will retry next tick",
+            evt.id,
+            attempts,
+            MAX_HANDLER_ATTEMPTS,
+            exc_info=exc,
+        )
+        return False
+    try:
+        with transaction(conn):
+            _dead_letter(conn, evt, attempts, exc)
+            _write_cursor(conn, evt.id)
+        logger.error(
+            "projector failed %d times for event %d; dead-lettering and advancing past it",
+            attempts,
+            evt.id,
+        )
+        return True
+    except Exception:
+        logger.exception(
+            "projector failed %d times for event %d AND the dead-letter write failed; "
+            "trying a cursor-only advance to keep the stream unblocked (DLQ record lost)",
+            attempts,
+            evt.id,
+        )
+    try:
+        with transaction(conn):
+            _write_cursor(conn, evt.id)
+        logger.error(
+            "projector failed %d times for event %d; advanced past it without a DLQ record",
+            attempts,
+            evt.id,
+        )
+        return True
+    except Exception:
+        logger.exception(
+            "projector failed %d times for event %d AND both the dead-letter write "
+            "and fallback cursor write failed; NOT advancing -- event stays pending",
+            attempts,
+            evt.id,
+        )
+        return False
+
+
 def run() -> None:
     # Own the long-lived connection's lifecycle: close it on any loop exit
     # (KeyboardInterrupt/SIGINT or a fatal error) so the daemon doesn't leak the
@@ -193,8 +277,20 @@ def _run_loop(conn: sqlite3.Connection) -> None:
                     )
                     last_seen = evt.id
                     continue
-                _handle_event(conn, vault, evt, cfg.projector.kind_dirs)
-                last_seen = evt.id
+                try:
+                    _handle_event(conn, vault, evt, cfg.projector.kind_dirs)
+                    _clear_attempts(conn, evt.id)
+                except Exception as exc:
+                    # Retry parseable projector failures with a bounded budget so
+                    # one deterministic renderer/handler bug cannot permanently
+                    # head-of-line-block all later events.
+                    if _handle_failure(conn, evt, exc):
+                        last_seen = evt.id
+                        cursor = evt.id
+                        continue
+                    break
+                else:
+                    last_seen = evt.id
             if last_seen != cursor:
                 _write_cursor(conn, last_seen)
                 cursor = last_seen

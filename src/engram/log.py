@@ -170,11 +170,12 @@ def since(conn: sqlite3.Connection, last_id: int, types: list[str] | None = None
             continue
         try:
             yield _row_to_event(r)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, TypeError):
             # Opt-in poison handling: surface the row as a flagged Event (carrying
             # the id) instead of raising, so a single corrupt payload can't abort
-            # the whole iteration and freeze a daemon's cursor (#84). Narrowly
-            # scoped to JSON decode failures so genuine bugs still propagate.
+            # the whole iteration and freeze a daemon's cursor (#84). Handles
+            # malformed JSON and non-text payload corruption while still keeping
+            # genuine non-parse bugs visible.
             yield Event(
                 id=r["id"],
                 ts=r["ts"],

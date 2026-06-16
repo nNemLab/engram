@@ -17,7 +17,8 @@ REPO = Path(__file__).resolve().parents[2]
 def _apply(conn):
     for fn in ("001_initial.sql", "002_sources_and_revisions.sql",
                "003_grounding.sql", "004_protected.sql",
-               "005_event_hash_chain.sql"):
+               "005_event_hash_chain.sql", "006_reactor_dead_letter.sql",
+               "007_unique_current_per_url.sql", "008_projector_dead_letter.sql"):
         conn.executescript((REPO / "schema" / fn).read_text())
 
 
@@ -31,12 +32,12 @@ def conn(tmp_path):
     yield c
 
 
-def _seed_content(conn, h, body):
+def _seed_content(conn, h, body, source_url):
     conn.execute(
         "INSERT INTO content (hash, body, title, source_url, source_tier, "
         "confidence, kind, revision, is_current) "
-        "VALUES (?, ?, ?, 'https://x/p', 'vendor-doc', 0.7, 'research', 1, 1)",
-        (h, body, body),
+        "VALUES (?, ?, ?, ?, 'vendor-doc', 0.7, 'research', 1, 1)",
+        (h, body, body, source_url),
     )
 
 
@@ -52,8 +53,8 @@ def test_run_skips_poison_event_between_good_events(conn, tmp_path, monkeypatch)
     vault = tmp_path / "vault"
     h_a = content_hash("body A")
     h_b = content_hash("body B")
-    _seed_content(conn, h_a, "body A")
-    _seed_content(conn, h_b, "body B")
+    _seed_content(conn, h_a, "body A", "https://x/a")
+    _seed_content(conn, h_b, "body B", "https://x/b")
 
     # event order: good (A) -> poison -> good (B)
     event_log.append(conn, "ingested", {"hash": h_a})
