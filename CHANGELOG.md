@@ -8,6 +8,40 @@ From v0.2.1 onward, releases are automated by
 [Conventional Commits](https://www.conventionalcommits.org/); entries below
 v0.2.1 were authored by hand.
 
+## [0.2.5](https://github.com/nNemLab/engram/compare/v0.2.4...v0.2.5) (2026-06-16)
+
+
+### Features
+
+* **projector:** dead-letter repeated projection failures ([#200](https://github.com/nNemLab/engram/issues/200)) ([e210020](https://github.com/nNemLab/engram/commit/e210020452f16d844aa866f93667e631913c884f)), closes [#158](https://github.com/nNemLab/engram/issues/158)
+* **rag:** cwd-scoped priming for session.prime / /prime ([#195](https://github.com/nNemLab/engram/issues/195)) ([308e5be](https://github.com/nNemLab/engram/commit/308e5beeeda98355d34f5eb1f1c18a582c483dfb))
+* **sources:** emit audit events for source mutations ([#175](https://github.com/nNemLab/engram/issues/175)) ([05d76bb](https://github.com/nNemLab/engram/commit/05d76bb3577d930f2574fd8fe206209396c8e7cf)), closes [#166](https://github.com/nNemLab/engram/issues/166)
+
+
+### Bug Fixes
+
+* **db:** data-integrity cluster — atomic, cross-process-exclusive schema migrations ([#191](https://github.com/nNemLab/engram/issues/191)) ([f502c9d](https://github.com/nNemLab/engram/commit/f502c9d4882ce88c0ce7940fbec0a55f28cda4a2))
+* harden batch retrieval, temporal filtering, and dedup correctness ([#193](https://github.com/nNemLab/engram/issues/193)) ([b7dcd33](https://github.com/nNemLab/engram/commit/b7dcd33242bec004afe9fb195cb965386480b01e))
+* **infra:** harden config loading, eos-source CLI, and poller retry/rate-limit ([#194](https://github.com/nNemLab/engram/issues/194)) ([dda59ec](https://github.com/nNemLab/engram/commit/dda59ec626dcd34d2d31923bf5b9a13f231a6524))
+* **poller:** segment-aware glob scoping, skip empty bodies, config-driven confidence/kind ([#178](https://github.com/nNemLab/engram/issues/178)) ([42c91df](https://github.com/nNemLab/engram/commit/42c91df38d89b08e186a08dfdd99c8b040f3de9f)), closes [#171](https://github.com/nNemLab/engram/issues/171)
+* **rag:** offload grounding and prime CPU work from event loop ([#198](https://github.com/nNemLab/engram/issues/198)) ([da8768d](https://github.com/nNemLab/engram/commit/da8768da9cf44f6c6439272e74e1ff07bc757bbe)), closes [#157](https://github.com/nNemLab/engram/issues/157)
+* **rag:** skip and log corrupt event-log payloads instead of aborting ([#177](https://github.com/nNemLab/engram/issues/177)) ([95b7363](https://github.com/nNemLab/engram/commit/95b7363beeb76a1218ec13b790a68920469a423d)), closes [#155](https://github.com/nNemLab/engram/issues/155)
+* **reactor:** close robustness gaps in staleness, tick backoff, and shutdown ([#201](https://github.com/nNemLab/engram/issues/201)) ([9a505b3](https://github.com/nNemLab/engram/commit/9a505b3d660fc4686e7da09de2ea350a375e886a)), closes [#172](https://github.com/nNemLab/engram/issues/172)
+* **research:** IP failover, pre-fetch dedup, media-type allowlist, arxiv field queries, tokenizer truncation ([#176](https://github.com/nNemLab/engram/issues/176)) ([6f96555](https://github.com/nNemLab/engram/commit/6f965555301da227008d577b3c09bf1006abad56)), closes [#173](https://github.com/nNemLab/engram/issues/173)
+* **retrieval:** exclude non-current revisions from KNN/near-dup retrieval ([#151](https://github.com/nNemLab/engram/issues/151)) ([0855de6](https://github.com/nNemLab/engram/commit/0855de60bdfe32d9fa707de6a914a0570ba86196)), closes [#139](https://github.com/nNemLab/engram/issues/139)
+* **vault:** use explicit UTF-8 for vault file reads and writes ([#174](https://github.com/nNemLab/engram/issues/174)) ([a559310](https://github.com/nNemLab/engram/commit/a5593109e4dd21c4b2d50436166006073a0fd780)), closes [#159](https://github.com/nNemLab/engram/issues/159)
+* **watcher:** add delete/move handling and startup reconciliation ([#199](https://github.com/nNemLab/engram/issues/199)) ([7b87e28](https://github.com/nNemLab/engram/commit/7b87e284130c7345cc403d39aca120d034ad6cb1)), closes [#165](https://github.com/nNemLab/engram/issues/165)
+
+
+### Documentation
+
+* adopt low-friction private security reporting policy ([#146](https://github.com/nNemLab/engram/issues/146)) ([c478488](https://github.com/nNemLab/engram/commit/c478488f9325f407c51dad9b768429199c5a40a2))
+* align CONTRIBUTING test suites and commit types with CI ([#147](https://github.com/nNemLab/engram/issues/147)) ([8d22d7a](https://github.com/nNemLab/engram/commit/8d22d7a81c7209306df3415482caa0e2227859aa))
+* correct README claims for unimplemented capabilities ([#142](https://github.com/nNemLab/engram/issues/142)) ([f28361a](https://github.com/nNemLab/engram/commit/f28361af396a4d5c5a381c13f42251ed73813fbd))
+* fix remaining "human and agent share the dedup gate" claims ([#144](https://github.com/nNemLab/engram/issues/144)) ([ef26581](https://github.com/nNemLab/engram/commit/ef26581787aff7a2c1cfecd830c6416ab39311b1))
+* **rag:** list /cite endpoint in serve help text ([#190](https://github.com/nNemLab/engram/issues/190)) ([285b297](https://github.com/nNemLab/engram/commit/285b29756f9e58599f1a6e54e706cc8dd47c7264)), closes [#167](https://github.com/nNemLab/engram/issues/167)
+* tighten overstated README claims to match actual behavior ([#145](https://github.com/nNemLab/engram/issues/145)) ([cf590fc](https://github.com/nNemLab/engram/commit/cf590fca6f4b0c60106cf5c31eae6fafd0805448))
+
 ## [0.2.4](https://github.com/nNemLab/engram/compare/v0.2.3...v0.2.4) (2026-06-15)
 
 
