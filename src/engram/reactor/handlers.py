@@ -92,7 +92,7 @@ def on_retrieved(conn: sqlite3.Connection, evt: event_log.Event) -> None:
     # loop's per-event transaction when called from the loop (#153).
     with transaction(conn):
         rows = conn.execute(
-            f"SELECT hash, fetched_at, ttl_days, source_url FROM content "
+            f"SELECT hash, fetched_at, ttl_days, source_url, staleness_score FROM content "
             f"WHERE hash IN ({','.join('?' * len(hashes))}) AND tombstoned = 0",
             hashes,
         ).fetchall()
@@ -108,14 +108,49 @@ def on_retrieved(conn: sqlite3.Connection, evt: event_log.Event) -> None:
             if fraction < threshold:
                 continue
             new_score = min(1.0, fraction)
-            conn.execute("UPDATE content SET staleness_score = ? WHERE hash = ?",
-                         (new_score, row["hash"]))
-            event_log.append(conn, "stale_marked",
-                             {"hash": row["hash"], "score": new_score}, actor="reactor")
+            # #172: keep staleness_score monotonic for each hash.
+            # NOTE: this relies on schema 001 defining staleness_score as
+            # NOT NULL DEFAULT 0.0; SQLite scalar MAX(x, y) returns NULL if
+            # either argument is NULL.
+            conn.execute(
+                "UPDATE content SET staleness_score = MAX(staleness_score, ?) WHERE hash = ?",
+                (new_score, row["hash"]),
+            )
+
+            # #172: de-dupe demand-driven emissions.
+            # Intentionally all-time / lifetime-of-log scope: once a hash has any
+            # stale_marked/refresh_requested event, we do not emit another one.
+            # This is safe only while there is no refresh_requested consumer and
+            # no staleness-reset path. TODO: when refresh consumption/completion
+            # or supersede/un-stale markers exist, scope this to an "open" window
+            # (e.g., since last completion marker) so legitimate re-emission is
+            # not permanently suppressed.
+            stale_marked_exists = conn.execute(
+                "SELECT 1 FROM events WHERE type = 'stale_marked' "
+                "AND json_extract(payload, '$.hash') = ? LIMIT 1",
+                (row["hash"],),
+            ).fetchone() is not None
+            if not stale_marked_exists:
+                event_log.append(
+                    conn,
+                    "stale_marked",
+                    {"hash": row["hash"], "score": max(float(row["staleness_score"] or 0.0), new_score)},
+                    actor="reactor",
+                )
+
             if row["source_url"]:
-                event_log.append(conn, "refresh_requested",
-                                 {"hash": row["hash"], "source_url": row["source_url"]},
-                                 actor="reactor")
+                refresh_open = conn.execute(
+                    "SELECT 1 FROM events WHERE type = 'refresh_requested' "
+                    "AND json_extract(payload, '$.hash') = ? LIMIT 1",
+                    (row["hash"],),
+                ).fetchone() is not None
+                if not refresh_open:
+                    event_log.append(
+                        conn,
+                        "refresh_requested",
+                        {"hash": row["hash"], "source_url": row["source_url"]},
+                        actor="reactor",
+                    )
 
 
 HANDLERS = {

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import logging
+import signal
 import sqlite3
 import time
+from types import FrameType
 
 from .. import log as event_log
 from ..common.db import get_connection, transaction
@@ -19,6 +21,14 @@ CURSOR_KEY = "reactor"
 # (permanently) failing event can't head-of-line-block the stream forever. The
 # poison path (#84) is a different class (unparseable payloads) and is unaffected.
 MAX_HANDLER_ATTEMPTS = 5
+
+# #172: tick-level failures back off exponentially (bounded) so a persistently
+# failing tick does not spin forever at 1Hz.
+BASE_TICK_BACKOFF_SECONDS = 1.0
+MAX_TICK_BACKOFF_SECONDS = 30.0
+
+# #172: process-level graceful shutdown flag set by signal handlers.
+_SHUTDOWN_REQUESTED = False
 
 
 def _read_cursor(conn: sqlite3.Connection) -> int:
@@ -70,11 +80,29 @@ def _dead_letter(
     _clear_attempts(conn, evt.id)
 
 
+def request_shutdown(signum: int | None = None, _frame: FrameType | None = None) -> None:
+    """Request graceful reactor shutdown (used by SIGINT/SIGTERM handlers)."""
+    global _SHUTDOWN_REQUESTED
+    _SHUTDOWN_REQUESTED = True
+    if signum is None:
+        logger.info("reactor shutdown requested")
+    else:
+        logger.info("reactor shutdown requested via signal %s", signum)
+
+
+def install_signal_handlers() -> None:
+    """Register SIGINT/SIGTERM handlers that trigger graceful shutdown."""
+    signal.signal(signal.SIGINT, request_shutdown)
+    signal.signal(signal.SIGTERM, request_shutdown)
+
+
 def run() -> None:
     # Own the long-lived connection's lifecycle: close it on any loop exit
     # (KeyboardInterrupt/SIGINT or a fatal error) so the daemon doesn't leak the
     # connection + WAL sidecars on shutdown (#92). common/db.get_connection
     # documents that the caller must close.
+    global _SHUTDOWN_REQUESTED
+    _SHUTDOWN_REQUESTED = False
     conn = get_connection()
     try:
         _run_loop(conn)
@@ -159,7 +187,9 @@ def _run_loop(conn: sqlite3.Connection) -> None:
     cursor = _read_cursor(conn)
     logger.info("reactor starting; cursor=%d handlers=%s", cursor, list(HANDLERS))
     types = list(HANDLERS.keys())
-    while True:
+    backoff_seconds = BASE_TICK_BACKOFF_SECONDS
+    while not _SHUTDOWN_REQUESTED:
+        tick_failed = False
         try:
             # Materialize the batch before processing: each event below COMMITs its
             # own transaction, so we must not iterate a live cursor over `events`
@@ -210,5 +240,15 @@ def _run_loop(conn: sqlite3.Connection) -> None:
                 else:
                     cursor = evt.id  # committed: handler effects + cursor together
         except Exception:
+            tick_failed = True
             logger.exception("reactor tick failed")
-        time.sleep(1)
+
+        if _SHUTDOWN_REQUESTED:
+            break
+
+        if tick_failed:
+            time.sleep(backoff_seconds)
+            backoff_seconds = min(backoff_seconds * 2, MAX_TICK_BACKOFF_SECONDS)
+        else:
+            backoff_seconds = BASE_TICK_BACKOFF_SECONDS
+            time.sleep(BASE_TICK_BACKOFF_SECONDS)
