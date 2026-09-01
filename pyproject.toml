@@ -26,24 +26,24 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
 ]
 dependencies = [
-    "mcp>=1.0.0",
+    "mcp>=2.1.1",
     "sqlite-vec>=0.1.6",
     "numpy>=1.26",
     "watchdog>=4.0.0",
     "pyyaml>=6.0",
-    "pydantic>=2.0",
+    "pydantic>=2.13.5",
     "httpx>=0.27",
     "papermill>=2.5",
-    "ipykernel>=6.29",
-    "marimo>=0.9",
-    "click>=8.1",
+    "ipykernel>=7.3.0",
+    "marimo>=0.24.0",
+    "click>=8.5.0",
     "rich>=13.0",
-    "trafilatura>=2.0",
-    "arxiv>=2.1",
-    "openai>=1.40",
-    "uvicorn>=0.30",
-    "starlette>=0.37",
-    "pymupdf>=1.24",
+    "trafilatura>=2.2.0",
+    "arxiv>=4.0.1",
+    "openai>=3.6.0",
+    "uvicorn>=0.52.4",
+    "starlette>=1.6.0",
+    "pymupdf>=1.28.2",
 ]
 
 [project.optional-dependencies]
@@ -52,12 +52,12 @@ dependencies = [
 # research rerank — every real install (eos-init, Docker) installs `[rag]`.
 # Kept out of core so CI and tooling that stub embeddings install torch-free.
 rag = [
-    "sentence-transformers>=3.0.0",
+    "sentence-transformers>=6.0.0",
 ]
 dev = [
-    "pytest>=8.0",
+    "pytest>=9.1.1",
     "pytest-asyncio>=0.23",
-    "ruff>=0.5",
+    "ruff>=0.16.5",
 ]
 
 [project.scripts]
